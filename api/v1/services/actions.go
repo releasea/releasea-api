@@ -358,6 +358,9 @@ func PromoteCanary(c *gin.Context) {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to update service for promote")
 		return
 	}
+	if err := operations.RepublishRulesForServiceStrategy(ctx, serviceID); err != nil {
+		log.Printf("[service] failed to republish rules after canary promote (service=%s): %v", serviceID, err)
+	}
 
 	operationID := "op-" + uuid.NewString()
 	requestedBy := shared.AuthDisplayName(c)

@@ -22,9 +22,9 @@ import (
 )
 
 const (
-	defaultPauseIdleTimeoutSeconds = 3600
-	minPauseIdleTimeoutSeconds     = 60
-	maxPauseIdleTimeoutSeconds     = 7 * 24 * 60 * 60
+	defaultPauseIdleTimeoutFallbackSeconds = 3600
+	minPauseIdleTimeoutSeconds             = 60
+	maxPauseIdleTimeoutSeconds             = 7 * 24 * 60 * 60
 )
 
 // Services
@@ -167,7 +167,7 @@ func CreateService(c *gin.Context) {
 	if serviceType != "microservice" {
 		payload["pauseOnIdle"] = false
 	} else if _, ok := payload["pauseIdleTimeoutSeconds"]; !ok {
-		payload["pauseIdleTimeoutSeconds"] = defaultPauseIdleTimeoutSeconds
+		payload["pauseIdleTimeoutSeconds"] = pauseIdleDefaultTimeoutSeconds()
 	}
 	normalizeServiceRuntimeFields(payload)
 
@@ -358,7 +358,7 @@ func normalizePauseIdleTimeout(payload bson.M) {
 	}
 	timeoutSeconds := shared.IntValue(raw)
 	if timeoutSeconds <= 0 {
-		payload["pauseIdleTimeoutSeconds"] = defaultPauseIdleTimeoutSeconds
+		payload["pauseIdleTimeoutSeconds"] = pauseIdleDefaultTimeoutSeconds()
 		return
 	}
 	if timeoutSeconds < minPauseIdleTimeoutSeconds {
@@ -368,6 +368,21 @@ func normalizePauseIdleTimeout(payload bson.M) {
 		timeoutSeconds = maxPauseIdleTimeoutSeconds
 	}
 	payload["pauseIdleTimeoutSeconds"] = timeoutSeconds
+}
+
+func pauseIdleDefaultTimeoutSeconds() int {
+	value := strings.TrimSpace(shared.EnvOrDefault("RELEASEA_PAUSE_IDLE_DEFAULT_SECONDS", strconv.Itoa(defaultPauseIdleTimeoutFallbackSeconds)))
+	timeoutSeconds, err := strconv.Atoi(value)
+	if err != nil || timeoutSeconds <= 0 {
+		timeoutSeconds = defaultPauseIdleTimeoutFallbackSeconds
+	}
+	if timeoutSeconds < minPauseIdleTimeoutSeconds {
+		timeoutSeconds = minPauseIdleTimeoutSeconds
+	}
+	if timeoutSeconds > maxPauseIdleTimeoutSeconds {
+		timeoutSeconds = maxPauseIdleTimeoutSeconds
+	}
+	return timeoutSeconds
 }
 
 // resolveProfileResources looks up the runtime profile by profileId and sets cpu/memory on the payload.

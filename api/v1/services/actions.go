@@ -55,6 +55,13 @@ func CreateDeploy(c *gin.Context) {
 	}
 
 	serviceType := strings.ToLower(shared.StringValue(service["type"]))
+	if strings.EqualFold(shared.StringValue(service["status"]), "creating") {
+		c.JSON(http.StatusConflict, gin.H{
+			"message": "Service creation is still in progress. Wait until it finishes before deploying.",
+			"code":    "SERVICE_CREATION_IN_PROGRESS",
+		})
+		return
+	}
 	sourceType := normalizeServiceSourceType(shared.StringValue(service["sourceType"]))
 	if sourceType == "" {
 		if strings.TrimSpace(shared.StringValue(service["repoUrl"])) != "" {
@@ -105,9 +112,6 @@ func CreateDeploy(c *gin.Context) {
 			"$in": operations.DeployQueueBlockingStatuses(),
 		},
 	}
-	if deployVersion != "" {
-		activeDeployFilter["commit"] = deployVersion
-	}
 
 	existingDeploy, err := shared.FindOne(ctx, shared.Collection(shared.DeploysCollection), activeDeployFilter)
 	if err == nil {
@@ -125,6 +129,8 @@ func CreateDeploy(c *gin.Context) {
 				response["operation"] = existingOperation
 			}
 		}
+		response["queued"] = false
+		response["blockedByActiveDeploy"] = true
 		c.JSON(http.StatusAccepted, response)
 		return
 	}
@@ -290,8 +296,7 @@ func CreateDeploy(c *gin.Context) {
 	if !publishOperationOrRespondQueued(c, ctx, operationID, opDoc, gin.H{"deploy": deployDoc}) {
 		return
 	}
-
-	c.JSON(http.StatusAccepted, gin.H{"operation": opDoc, "deploy": deployDoc})
+	c.JSON(http.StatusAccepted, gin.H{"operation": opDoc, "deploy": deployDoc, "queued": true})
 }
 
 func PromoteCanary(c *gin.Context) {

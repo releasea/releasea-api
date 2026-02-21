@@ -542,7 +542,22 @@ func PublishRule(c *gin.Context) {
 	if environment == "" {
 		environment = "prod"
 	}
+	environment = shared.NormalizeOperationEnvironment(environment)
 	serviceID := shared.StringValue(rule["serviceId"])
+
+	activeWorker, workerErr := shared.HasActiveWorkerForEnvironment(ctx, environment)
+	if workerErr != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to validate worker availability")
+		return
+	}
+	if !activeWorker {
+		c.JSON(http.StatusConflict, gin.H{
+			"message":     shared.WorkerUnavailableMessage(environment),
+			"code":        shared.WorkerAvailabilityErrorCode,
+			"environment": environment,
+		})
+		return
+	}
 
 	log.Printf("[rule.deploy] ruleId=%s serviceId=%s environment=%s internal=%v external=%v requestedBy=%s",
 		ruleID, serviceID, environment, payload.Internal, payload.External, shared.AuthDisplayName(c))

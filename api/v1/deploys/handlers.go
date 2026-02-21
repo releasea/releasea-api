@@ -20,6 +20,7 @@ func GetDeploys(c *gin.Context) {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to load deploys")
 		return
 	}
+	operations.NormalizeDeployDocuments(items)
 	c.JSON(http.StatusOK, items)
 }
 

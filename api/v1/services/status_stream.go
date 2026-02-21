@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"releaseaapi/api/v1/operations"
 	"releaseaapi/api/v1/shared"
 	"releaseaapi/client"
 
@@ -295,6 +296,7 @@ func loadServiceStatusSnapshot(ctx context.Context, serviceID, environment strin
 	if err != nil {
 		return serviceStatusSnapshot{}, false, err
 	}
+	operations.NormalizeDeployDocuments(deploys)
 	rules, err := shared.FindAll(ctx, shared.Collection(shared.RulesCollection), scopedFilter)
 	if err != nil {
 		return serviceStatusSnapshot{}, false, err
@@ -322,6 +324,7 @@ func loadServicesStatusSnapshot(ctx context.Context) (servicesStatusSnapshot, er
 	if err != nil {
 		return servicesStatusSnapshot{}, err
 	}
+	operations.NormalizeDeployDocuments(deploys)
 	return servicesStatusSnapshot{
 		Services:  normalizeSlice(servicesList),
 		Deploys:   normalizeSlice(deploys),

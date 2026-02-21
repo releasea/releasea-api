@@ -1,6 +1,10 @@
 package operations
 
-import "strings"
+import (
+	"strings"
+
+	"go.mongodb.org/mongo-driver/bson"
+)
 
 const (
 	DeployStatusRequested   = "requested"
@@ -17,9 +21,11 @@ const (
 )
 
 var deployQueueBlockingStatuses = []string{
+	DeployStatusRequested,
 	DeployStatusScheduled,
 	DeployStatusPreparing,
 	DeployStatusDeploying,
+	DeployStatusRetrying,
 	StatusQueued,
 	StatusInProgress,
 }
@@ -86,6 +92,60 @@ func NormalizeDeployStatus(status string) string {
 func IsKnownDeployStatus(status string) bool {
 	_, ok := deployKnownStatuses[NormalizeDeployStatus(status)]
 	return ok
+}
+
+func NormalizeDeployDocument(doc bson.M) {
+	if doc == nil {
+		return
+	}
+
+	normalizedStatus := NormalizeDeployStatus(stringFromAny(doc["status"]))
+	if normalizedStatus != "" {
+		doc["status"] = normalizedStatus
+	}
+
+	if normalizedStrategy := normalizeDeployStrategyStatus(doc["strategyStatus"], normalizedStatus); normalizedStrategy != nil {
+		doc["strategyStatus"] = normalizedStrategy
+	}
+}
+
+func NormalizeDeployDocuments(docs []bson.M) {
+	for _, doc := range docs {
+		NormalizeDeployDocument(doc)
+	}
+}
+
+func normalizeDeployStrategyStatus(raw interface{}, fallbackPhase string) bson.M {
+	strategyStatus := toBSONMap(raw)
+	if strategyStatus == nil {
+		return nil
+	}
+	phase := NormalizeDeployStatus(stringFromAny(strategyStatus["phase"]))
+	if phase == "" {
+		phase = fallbackPhase
+	}
+	if phase != "" {
+		strategyStatus["phase"] = phase
+	}
+	return strategyStatus
+}
+
+func toBSONMap(raw interface{}) bson.M {
+	switch value := raw.(type) {
+	case bson.M:
+		return value
+	case map[string]interface{}:
+		return bson.M(value)
+	default:
+		return nil
+	}
+}
+
+func stringFromAny(raw interface{}) string {
+	if value, ok := raw.(string); ok {
+		return strings.TrimSpace(value)
+	}
+	return ""
 }
 
 func CanTransitionDeployStatus(current, next string) bool {

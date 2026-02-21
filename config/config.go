@@ -9,7 +9,7 @@ import (
 type Config struct {
 	Port                string
 	MongoURI            string
-	DoSetup             bool
+	ResetOnStart        bool
 	InstallTemplates    bool
 	TemplatesRepoOwner  string
 	TemplatesRepoName   string
@@ -28,7 +28,7 @@ func LoadConfig() *Config {
 	return &Config{
 		Port:                env("PORT", "8070"),
 		MongoURI:            os.Getenv("MONGO_URI"),
-		DoSetup:             envBool("RELEASEA_SETUP", false),
+		ResetOnStart:        envBool("RELEASEA_RESET", false),
 		InstallTemplates:    envBool("INSTALL_TEMPLATES", true),
 		TemplatesRepoOwner:  env("TEMPLATE_REPO_OWNER", "releasea"),
 		TemplatesRepoName:   env("TEMPLATE_REPO_NAME", "templates"),

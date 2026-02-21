@@ -3,6 +3,7 @@ package governance
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -16,15 +17,10 @@ import (
 )
 
 const (
-	approvalStatusPending  = "pending"
-	approvalStatusApproved = "approved"
-	approvalStatusRejected = "rejected"
+	approvalStatusPending  = shared.GovernanceApprovalStatusPending
+	approvalStatusApproved = shared.GovernanceApprovalStatusApproved
+	approvalStatusRejected = shared.GovernanceApprovalStatusRejected
 )
-
-var allowedApprovalTypes = map[string]struct{}{
-	"deploy":       {},
-	"rule-publish": {},
-}
 
 type governanceSettingsPayload struct {
 	DeployApproval struct {
@@ -70,22 +66,11 @@ func requireAdminRequest(c *gin.Context) bool {
 }
 
 func normalizeApprovalStatus(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case approvalStatusApproved:
-		return approvalStatusApproved
-	case approvalStatusRejected:
-		return approvalStatusRejected
-	default:
-		return ""
-	}
+	return shared.NormalizeGovernanceApprovalStatus(value)
 }
 
 func normalizeApprovalType(value string) string {
-	normalized := strings.ToLower(strings.TrimSpace(value))
-	if _, ok := allowedApprovalTypes[normalized]; ok {
-		return normalized
-	}
-	return ""
+	return shared.NormalizeGovernanceApprovalType(value)
 }
 
 func normalizeGovernanceEnvironments(values []string) []string {
@@ -288,44 +273,42 @@ func CreateGovernanceApproval(c *gin.Context) {
 		return
 	}
 
-	id := "apr-" + uuid.NewString()
-	now := shared.NowISO()
-	doc := bson.M{
-		"_id":          id,
-		"id":           id,
-		"type":         approvalType,
-		"status":       approvalStatusPending,
-		"resourceId":   resourceID,
-		"resourceName": resourceName,
-		"requestedBy":  requestedBy,
-		"requestedAt":  now,
-		"updatedAt":    now,
-	}
-	if environment != "" {
-		doc["environment"] = environment
-	}
-	if len(payload.Metadata) > 0 {
-		doc["metadata"] = payload.Metadata
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
-	if err := shared.InsertOne(ctx, shared.Collection(shared.GovernanceApprovalsCollection), doc); err != nil {
+	settings, err := shared.LoadGovernanceSettings(ctx)
+	if err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to load governance settings")
+		return
+	}
+	requiredApprovers := shared.MinApproversForApprovalType(settings, approvalType)
+	doc, _, err := shared.CreateOrGetPendingGovernanceApproval(ctx, shared.GovernanceApprovalCreateParams{
+		Type:              approvalType,
+		ResourceID:        resourceID,
+		ResourceName:      resourceName,
+		Environment:       environment,
+		RequestedBy:       requestedBy,
+		Metadata:          payload.Metadata,
+		RequiredApprovers: requiredApprovers,
+	})
+	if err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to create approval")
 		return
 	}
+
+	approvalID := shared.StringValue(doc["id"])
 
 	recordGovernanceAudit(
 		ctx,
 		"governance.approval.requested",
 		"approval",
-		id,
+		approvalID,
 		resourceName,
 		requestedBy,
 		map[string]interface{}{
-			"type":        approvalType,
-			"resourceId":  resourceID,
-			"environment": environment,
+			"type":         approvalType,
+			"resourceId":   resourceID,
+			"environment":  environment,
+			"minApprovers": requiredApprovers,
 		},
 	)
 
@@ -349,6 +332,22 @@ func ReviewGovernanceApproval(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
 		return
 	}
+	status := normalizeApprovalStatus(payload.Status)
+	if status == "" || status == approvalStatusPending {
+		shared.RespondError(c, http.StatusBadRequest, "Invalid approval status")
+		return
+	}
+	reviewer := bson.M{
+		"id":    authValue(c, "authUserId"),
+		"name":  authValue(c, "authName"),
+		"email": authValue(c, "authEmail"),
+	}
+	reviewerID := strings.TrimSpace(shared.StringValue(reviewer["id"]))
+	if reviewerID == "" {
+		shared.RespondError(c, http.StatusForbidden, "Reviewer context required")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
 
@@ -366,24 +365,63 @@ func ReviewGovernanceApproval(c *gin.Context) {
 		return
 	}
 
-	status := normalizeApprovalStatus(payload.Status)
-	if status == "" {
-		shared.RespondError(c, http.StatusBadRequest, "Invalid approval status")
+	reviews := extractApprovalReviews(approval["reviews"])
+	if hasReviewerReview(reviews, reviewerID) {
+		shared.RespondError(c, http.StatusConflict, "Reviewer has already submitted a review")
 		return
 	}
 
-	reviewer := bson.M{
-		"id":    authValue(c, "authUserId"),
-		"name":  authValue(c, "authName"),
-		"email": authValue(c, "authEmail"),
+	now := shared.NowISO()
+	reviewEntry := bson.M{
+		"status":     status,
+		"reviewedAt": now,
+		"reviewedBy": reviewer,
+		"comment":    strings.TrimSpace(payload.Comment),
 	}
+	reviews = append(reviews, reviewEntry)
+
+	approvedCount := countReviewsByStatus(reviews, approvalStatusApproved)
+	rejectedCount := countReviewsByStatus(reviews, approvalStatusRejected)
+	requiredApprovers := resolveRequiredApprovers(ctx, approval)
+	finalStatus := approvalStatusPending
+	if rejectedCount > 0 {
+		finalStatus = approvalStatusRejected
+	} else if approvedCount >= requiredApprovers {
+		finalStatus = approvalStatusApproved
+	}
+	remainingApprovals := requiredApprovers - approvedCount
+	if remainingApprovals < 0 {
+		remainingApprovals = 0
+	}
+
 	update := bson.M{
-		"status":        status,
-		"reviewedAt":    shared.NowISO(),
-		"reviewedBy":    reviewer,
-		"reviewComment": payload.Comment,
-		"updatedAt":     shared.NowISO(),
+		"reviews":           reviews,
+		"approvalsCount":    approvedCount,
+		"rejectionsCount":   rejectedCount,
+		"requiredApprovers": requiredApprovers,
+		"lastReviewedAt":    now,
+		"lastReviewedBy":    reviewer,
+		"updatedAt":         now,
 	}
+	execution := bson.M{}
+	if finalStatus != approvalStatusPending {
+		update["status"] = finalStatus
+		update["reviewedAt"] = now
+		update["reviewedBy"] = reviewer
+		update["reviewComment"] = strings.TrimSpace(payload.Comment)
+		if finalStatus == approvalStatusApproved {
+			execution, err = executeApprovedAction(ctx, mergeApprovalWithReviewState(approval, reviews, approvedCount, rejectedCount, requiredApprovers))
+			if err != nil {
+				execution = bson.M{
+					"status":    "failed",
+					"error":     err.Error(),
+					"updatedAt": now,
+				}
+			}
+			update["execution"] = execution
+		}
+	}
+
 	if err := shared.UpdateByID(ctx, shared.Collection(shared.GovernanceApprovalsCollection), approvalID, update); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to update approval")
 		return
@@ -397,12 +435,31 @@ func ReviewGovernanceApproval(c *gin.Context) {
 		shared.StringValue(approval["resourceName"]),
 		reviewer,
 		map[string]interface{}{
-			"status":  status,
-			"comment": strings.TrimSpace(payload.Comment),
+			"status":             finalStatus,
+			"decision":           status,
+			"comment":            strings.TrimSpace(payload.Comment),
+			"approvedCount":      approvedCount,
+			"rejectedCount":      rejectedCount,
+			"requiredApprovers":  requiredApprovers,
+			"remainingApprovals": remainingApprovals,
 		},
 	)
 
-	c.JSON(http.StatusOK, gin.H{"success": true})
+	response := gin.H{
+		"success":            true,
+		"status":             finalStatus,
+		"approvedCount":      approvedCount,
+		"rejectedCount":      rejectedCount,
+		"requiredApprovers":  requiredApprovers,
+		"remainingApprovals": remainingApprovals,
+	}
+	if len(execution) > 0 {
+		response["execution"] = execution
+	}
+	if finalStatus == approvalStatusPending {
+		response["message"] = fmt.Sprintf("Approval recorded. %d more approval(s) required.", remainingApprovals)
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func DeleteGovernanceApproval(c *gin.Context) {

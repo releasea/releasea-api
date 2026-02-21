@@ -64,6 +64,7 @@ func applyOperationSuccess(ctx context.Context, op bson.M, now string) error {
 			}
 		}
 		serviceID := shared.StringValue(op["resourceId"])
+		payload := shared.MapPayload(op["payload"])
 		if serviceID != "" {
 			service, err := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID})
 			if err == nil {
@@ -92,6 +93,11 @@ func applyOperationSuccess(ctx context.Context, op bson.M, now string) error {
 					}
 					servicePort := shared.IntValue(service["port"])
 					_ = SyncRulesToServicePort(ctx, serviceID, servicePort)
+					if strings.EqualFold(shared.StringValue(payload["strategyType"]), "canary") {
+						_ = RepublishRulesForServiceStrategyWithOptions(ctx, serviceID, RuleStrategyRepublishOptions{
+							Environment: environment,
+						})
+					}
 				}
 			}
 		}
@@ -160,9 +166,18 @@ func applyOperationSuccess(ctx context.Context, op bson.M, now string) error {
 		return shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), shared.StringValue(op["resourceId"]), update)
 	case "service.promote-canary":
 		serviceID := shared.StringValue(op["resourceId"])
+		payload := shared.MapPayload(op["payload"])
+		environment := strings.TrimSpace(shared.StringValue(payload["environment"]))
+		if environment == "" {
+			environment = "prod"
+		}
+		stableCanaryPercent := 0
 		if serviceID != "" {
 			_ = shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, bson.M{"status": "running", "isActive": true, "updatedAt": now})
-			_ = RepublishRulesForServiceStrategy(ctx, serviceID)
+			_ = RepublishRulesForServiceStrategyWithOptions(ctx, serviceID, RuleStrategyRepublishOptions{
+				Environment:           environment,
+				CanaryPercentOverride: &stableCanaryPercent,
+			})
 		}
 		return nil
 	case "service.delete":
@@ -305,10 +320,20 @@ func SyncRulesToServicePort(ctx context.Context, serviceID string, servicePort i
 	return RepublishRulesForServicePortChange(ctx, serviceID, servicePort)
 }
 
+type RuleStrategyRepublishOptions struct {
+	Environment           string
+	CanaryPercentOverride *int
+}
+
 func RepublishRulesForServiceStrategy(ctx context.Context, serviceID string) error {
+	return RepublishRulesForServiceStrategyWithOptions(ctx, serviceID, RuleStrategyRepublishOptions{})
+}
+
+func RepublishRulesForServiceStrategyWithOptions(ctx context.Context, serviceID string, options RuleStrategyRepublishOptions) error {
 	if serviceID == "" {
 		return nil
 	}
+	targetEnvironment := strings.TrimSpace(options.Environment)
 	rules, err := shared.FindAll(ctx, shared.Collection(shared.RulesCollection), bson.M{"serviceId": serviceID})
 	if err != nil {
 		return err
@@ -331,6 +356,9 @@ func RepublishRulesForServiceStrategy(ctx context.Context, serviceID string) err
 		if ruleEnv == "" {
 			ruleEnv = "prod"
 		}
+		if targetEnvironment != "" && ruleEnv != targetEnvironment {
+			continue
+		}
 		prevLastPublishedAt := shared.StringValue(rule["lastPublishedAt"])
 		update := bson.M{
 			"status":    StatusQueued,
@@ -339,14 +367,35 @@ func RepublishRulesForServiceStrategy(ctx context.Context, serviceID string) err
 		if err := shared.UpdateByID(ctx, shared.Collection(shared.RulesCollection), ruleID, update); err != nil {
 			continue
 		}
-		if err := QueueRuleDeploy(ctx, ruleID, serviceID, ruleEnv, gateways, gateways, prevStatus, prevLastPublishedAt, now); err != nil {
+		if err := QueueRuleDeployWithOptions(ctx, ruleID, serviceID, ruleEnv, gateways, gateways, prevStatus, prevLastPublishedAt, now, RuleDeployQueueOptions{
+			CanaryPercentOverride: options.CanaryPercentOverride,
+		}); err != nil {
 			continue
 		}
 	}
 	return nil
 }
 
+type RuleDeployQueueOptions struct {
+	CanaryPercentOverride *int
+}
+
 func QueueRuleDeploy(ctx context.Context, ruleID, serviceID, environment string, nextGateways, prevGateways []string, prevStatus, prevLastPublishedAt, now string) error {
+	return QueueRuleDeployWithOptions(ctx, ruleID, serviceID, environment, nextGateways, prevGateways, prevStatus, prevLastPublishedAt, now, RuleDeployQueueOptions{})
+}
+
+func QueueRuleDeployWithOptions(
+	ctx context.Context,
+	ruleID,
+	serviceID,
+	environment string,
+	nextGateways,
+	prevGateways []string,
+	prevStatus,
+	prevLastPublishedAt,
+	now string,
+	options RuleDeployQueueOptions,
+) error {
 	internal := false
 	external := false
 	internalGateway := shared.EnvOrDefault("RELEASEA_INTERNAL_GATEWAY", "istio-system/releasea-internal-gateway")
@@ -398,6 +447,9 @@ func QueueRuleDeploy(ctx context.Context, ruleID, serviceID, environment string,
 			"prevLastPublishedAt": prevLastPublishedAt,
 		},
 		"requestedBy": "System",
+	}
+	if options.CanaryPercentOverride != nil {
+		shared.MapPayload(opDoc["payload"])["canaryPercentOverride"] = *options.CanaryPercentOverride
 	}
 	if err := shared.InsertOne(ctx, shared.Collection(shared.OperationsCollection), opDoc); err != nil {
 		return err

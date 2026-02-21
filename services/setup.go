@@ -1,24 +1,42 @@
 package services
 
 import (
+	"context"
 	"log"
+
+	"releaseaapi/api/v1/shared"
 	"releaseaapi/config"
+
+	"go.mongodb.org/mongo-driver/bson"
 )
 
-// Setup seeds essential data when RELEASEA_SETUP=true.
+// Setup initializes base platform data.
+// RELEASEA_RESET=true forces a destructive reset (drop + restore defaults).
 func Setup(cfg *config.Config) {
 	didReset := false
-	if cfg == nil || !cfg.DoSetup {
-		log.Println("[setup] RELEASEA_SETUP=false, skipping seed.")
+	if cfg == nil || !cfg.ResetOnStart {
+		log.Println("[setup] RELEASEA_RESET=false, preserving existing database.")
 	} else {
-		log.Println("[setup] RELEASEA_SETUP=true, resetting database and seeding defaults...")
+		log.Println("[setup] RELEASEA_RESET=true, resetting database and restoring base defaults...")
 		if err := seedDefaults(true); err != nil {
 			log.Fatalf("[setup] failed to reset database: %v", err)
 		}
 		didReset = true
 	}
 
-	if err := ensureBootstrapIdentity(cfg); err != nil {
+	firstBootstrap := didReset
+	if !firstBootstrap {
+		var err error
+		firstBootstrap, err = requiresInitialBootstrap()
+		if err != nil {
+			log.Fatalf("[setup] failed to inspect bootstrap state: %v", err)
+		}
+		if firstBootstrap {
+			log.Println("[setup] no base data found; bootstrapping platform defaults.")
+		}
+	}
+
+	if err := ensureBootstrapIdentity(cfg, didReset || firstBootstrap); err != nil {
 		if didReset {
 			log.Fatalf("[setup] bootstrap identity failed after reset: %v", err)
 		}
@@ -43,4 +61,14 @@ func Setup(cfg *config.Config) {
 		}
 		log.Printf("[setup] template installation failed: %v", err)
 	}
+}
+
+func requiresInitialBootstrap() (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	defer cancel()
+	count, err := shared.Collection(shared.PlatformSettingsCollection).CountDocuments(ctx, bson.M{})
+	if err != nil {
+		return false, err
+	}
+	return count == 0, nil
 }

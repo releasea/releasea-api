@@ -63,7 +63,7 @@ go run ./cmd/main.go
 |---|---|---|
 | `RABBITMQ_URL` | RabbitMQ AMQP URL | `amqp://releasea:releasea@localhost:5672/` |
 | `WORKER_QUEUE` | Queue name consumed by workers | `releasea.worker` |
-| `WORKER_STALE_SECONDS` | Worker stale timeout used for environment-availability checks | `90` |
+| `WORKER_STALE_SECONDS` | Worker stale timeout used for environment-availability checks on deploy/start/stop/restart/rule publish | `90` |
 
 ### Observability and Runtime Status
 

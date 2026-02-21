@@ -421,9 +421,9 @@ func StartService(c *gin.Context) {
 		return
 	}
 
-	environment := strings.TrimSpace(payload.Environment)
-	if environment == "" {
-		environment = "prod"
+	environment := normalizeOperationEnvironment(payload.Environment)
+	if !ensureWorkerAvailabilityOrRespond(c, ctx, environment) {
+		return
 	}
 
 	if isStaticSiteService(service) {
@@ -528,9 +528,9 @@ func StopService(c *gin.Context) {
 		return
 	}
 
-	environment := strings.TrimSpace(payload.Environment)
-	if environment == "" {
-		environment = "prod"
+	environment := normalizeOperationEnvironment(payload.Environment)
+	if !ensureWorkerAvailabilityOrRespond(c, ctx, environment) {
+		return
 	}
 
 	if isStaticSiteService(service) {
@@ -630,9 +630,9 @@ func RestartService(c *gin.Context) {
 		return
 	}
 
-	environment := strings.TrimSpace(payload.Environment)
-	if environment == "" {
-		environment = "prod"
+	environment := normalizeOperationEnvironment(payload.Environment)
+	if !ensureWorkerAvailabilityOrRespond(c, ctx, environment) {
+		return
 	}
 
 	if isStaticSiteService(service) {

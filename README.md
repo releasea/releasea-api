@@ -38,11 +38,17 @@ go run ./cmd/main.go
 
 | Variable | Description | Default |
 |---|---|---|
-| `RELEASEA_SETUP` | When `true`, drops the database before bootstrap | `false` |
+| `RELEASEA_RESET` | When `true`, drops the database and restores base defaults on startup (destructive) | `false` |
 | `INSTALL_TEMPLATES` | Enables template installation from the templates repository | `true` |
 | `TEMPLATE_REPO_OWNER` | Templates repository owner | `releasea` |
 | `TEMPLATE_REPO_NAME` | Templates repository name | `templates` |
 | `TEMPLATE_REPO_REF` | Branch/tag used to fetch templates | `main` |
+
+Behavior summary:
+
+- First run on an empty database: the API bootstraps base data automatically.
+- Subsequent restarts: no reset is performed by default.
+- Forced reset/restore: set `RELEASEA_RESET=true` deliberately.
 
 ### Bootstrap Identity
 

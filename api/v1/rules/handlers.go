@@ -183,10 +183,20 @@ func createRuleFromPayload(c *gin.Context, payload map[string]interface{}, servi
 	internal := shared.BoolValue(payload["internal"])
 	external := shared.BoolValue(payload["external"])
 	wantsPublish := internal || external
+	requiresApproval := false
+	requiredApprovers := 1
+	if wantsPublish {
+		settings, settingsErr := shared.LoadGovernanceSettings(ctx)
+		if settingsErr != nil {
+			shared.RespondError(c, http.StatusInternalServerError, "Failed to load governance settings")
+			return
+		}
+		requiresApproval, requiredApprovers = shared.RulePublishApprovalRequired(settings, external)
+	}
 
 	gateways := []string{}
 	status := "draft"
-	if wantsPublish {
+	if wantsPublish && !requiresApproval {
 		gateways = operations.BuildGateways(nil, internal, external, environment)
 		status = operations.StatusQueued
 	}
@@ -222,39 +232,75 @@ func createRuleFromPayload(c *gin.Context, payload map[string]interface{}, servi
 	}
 
 	if wantsPublish {
-		operationID := "op-" + uuid.NewString()
-		opDoc := bson.M{
-			"_id":          operationID,
-			"id":           operationID,
-			"type":         "rule.publish",
-			"resourceType": "rule",
-			"resourceId":   ruleID,
-			"status":       operations.StatusQueued,
-			"createdAt":    now,
-			"updatedAt":    now,
-			"payload": bson.M{
-				"internal":            internal,
-				"external":            external,
-				"environment":         environment,
-				"prevGateways":        []string{},
-				"nextGateways":        gateways,
-				"prevStatus":          "draft",
-				"prevLastPublishedAt": "",
-			},
-			"requestedBy": shared.AuthDisplayName(c),
-		}
-		if err := shared.InsertOne(ctx, shared.Collection(shared.OperationsCollection), opDoc); err != nil {
-			log.Printf("[rule.create] ruleId=%s failed to queue operation: %v", ruleID, err)
-			_ = shared.UpdateByID(ctx, shared.Collection(shared.RulesCollection), ruleID, bson.M{
-				"status":    "draft",
-				"gateways":  []string{},
-				"updatedAt": shared.NowISO(),
+		if requiresApproval {
+			approvalDoc, _, approvalErr := shared.CreateOrGetPendingGovernanceApproval(ctx, shared.GovernanceApprovalCreateParams{
+				Type:         shared.GovernanceApprovalTypeRulePublish,
+				ResourceID:   ruleID,
+				ResourceName: name,
+				Environment:  environment,
+				RequestedBy: bson.M{
+					"id":    strings.TrimSpace(c.GetString("authUserId")),
+					"name":  shared.AuthDisplayName(c),
+					"email": strings.TrimSpace(c.GetString("authEmail")),
+				},
+				Metadata: map[string]interface{}{
+					"environment": environment,
+					"serviceId":   serviceID,
+					"hosts":       hosts,
+					"gateways":    operations.BuildGateways(nil, internal, external, environment),
+					"action": map[string]interface{}{
+						"kind":        "rule.publish",
+						"ruleId":      ruleID,
+						"serviceId":   serviceID,
+						"environment": environment,
+						"internal":    internal,
+						"external":    external,
+						"requestedBy": shared.AuthDisplayName(c),
+					},
+				},
+				RequiredApprovers: requiredApprovers,
 			})
-			shared.RespondError(c, http.StatusInternalServerError, "Failed to queue rule publish")
-			return
-		}
+			if approvalErr != nil {
+				shared.RespondError(c, http.StatusInternalServerError, "Failed to create governance approval")
+				return
+			}
+			ruleDoc["approvalRequired"] = true
+			ruleDoc["approval"] = approvalDoc
+		} else {
+			operationID := "op-" + uuid.NewString()
+			opDoc := bson.M{
+				"_id":          operationID,
+				"id":           operationID,
+				"type":         "rule.publish",
+				"resourceType": "rule",
+				"resourceId":   ruleID,
+				"status":       operations.StatusQueued,
+				"createdAt":    now,
+				"updatedAt":    now,
+				"payload": bson.M{
+					"internal":            internal,
+					"external":            external,
+					"environment":         environment,
+					"prevGateways":        []string{},
+					"nextGateways":        gateways,
+					"prevStatus":          "draft",
+					"prevLastPublishedAt": "",
+				},
+				"requestedBy": shared.AuthDisplayName(c),
+			}
+			if err := shared.InsertOne(ctx, shared.Collection(shared.OperationsCollection), opDoc); err != nil {
+				log.Printf("[rule.create] ruleId=%s failed to queue operation: %v", ruleID, err)
+				_ = shared.UpdateByID(ctx, shared.Collection(shared.RulesCollection), ruleID, bson.M{
+					"status":    "draft",
+					"gateways":  []string{},
+					"updatedAt": shared.NowISO(),
+				})
+				shared.RespondError(c, http.StatusInternalServerError, "Failed to queue rule publish")
+				return
+			}
 
-		shared.PublishOperationWithDispatchError(ctx, operationID)
+			shared.PublishOperationWithDispatchError(ctx, operationID)
+		}
 	}
 
 	actorID, actorName, actorRole := shared.AuditActorFromContext(c)
@@ -581,6 +627,68 @@ func PublishRule(c *gin.Context) {
 
 	prevGateways := shared.ToStringSlice(rule["gateways"])
 	nextGateways := operations.BuildGateways(prevGateways, payload.Internal, payload.External, environment)
+	triggeredBy := shared.AuthDisplayName(c)
+	if triggeredBy == "" {
+		triggeredBy = "System"
+	}
+
+	settings, err := shared.LoadGovernanceSettings(ctx)
+	if err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to load governance settings")
+		return
+	}
+	requiresApproval, minApprovers := shared.RulePublishApprovalRequired(settings, payload.External)
+	if requiresApproval {
+		ruleName := strings.TrimSpace(shared.StringValue(rule["name"]))
+		if ruleName == "" {
+			ruleName = ruleID
+		}
+		metadata := map[string]interface{}{
+			"environment": environment,
+			"serviceId":   serviceID,
+			"hosts":       shared.ToStringSlice(rule["hosts"]),
+			"gateways":    nextGateways,
+			"action": map[string]interface{}{
+				"kind":        "rule.publish",
+				"ruleId":      ruleID,
+				"serviceId":   serviceID,
+				"environment": environment,
+				"internal":    payload.Internal,
+				"external":    payload.External,
+				"requestedBy": triggeredBy,
+			},
+		}
+		approvalDoc, existing, approvalErr := shared.CreateOrGetPendingGovernanceApproval(ctx, shared.GovernanceApprovalCreateParams{
+			Type:         shared.GovernanceApprovalTypeRulePublish,
+			ResourceID:   ruleID,
+			ResourceName: ruleName,
+			Environment:  environment,
+			RequestedBy: bson.M{
+				"id":    strings.TrimSpace(c.GetString("authUserId")),
+				"name":  triggeredBy,
+				"email": strings.TrimSpace(c.GetString("authEmail")),
+			},
+			Metadata:          metadata,
+			RequiredApprovers: minApprovers,
+		})
+		if approvalErr != nil {
+			shared.RespondError(c, http.StatusInternalServerError, "Failed to create governance approval")
+			return
+		}
+		response := gin.H{
+			"queued":            false,
+			"approvalRequired":  true,
+			"approval":          approvalDoc,
+			"code":              "GOVERNANCE_APPROVAL_REQUIRED",
+			"requiredApprovers": minApprovers,
+			"message":           "Rule publish requires approval before queueing.",
+		}
+		if existing {
+			response["alreadyPending"] = true
+		}
+		c.JSON(http.StatusAccepted, response)
+		return
+	}
 
 	now := shared.NowISO()
 	if err := shared.UpdateByID(ctx, shared.Collection(shared.RulesCollection), ruleID, bson.M{
@@ -592,11 +700,6 @@ func PublishRule(c *gin.Context) {
 		log.Printf("[rule.deploy] ruleId=%s failed to update rule: %v", ruleID, err)
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to update rule")
 		return
-	}
-
-	triggeredBy := shared.AuthDisplayName(c)
-	if triggeredBy == "" {
-		triggeredBy = "System"
 	}
 
 	ruleDeployID := "rdeploy-" + uuid.NewString()

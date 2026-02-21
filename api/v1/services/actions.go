@@ -226,8 +226,6 @@ func CreateDeploy(c *gin.Context) {
 		log.Printf("[deploy] service=%s env=%s static site deploy, skipping template resources", serviceID, payload.Environment)
 	}
 
-	deployID := "deploy-" + uuid.NewString()
-	now := shared.NowISO()
 	triggeredBy := shared.AuthDisplayName(c)
 	if triggeredBy == "" {
 		triggeredBy = "System"
@@ -235,6 +233,84 @@ func CreateDeploy(c *gin.Context) {
 	if trigger == "auto" {
 		triggeredBy = "Auto Deploy"
 	}
+	serviceName := strings.TrimSpace(shared.StringValue(service["name"]))
+	if serviceName == "" {
+		serviceName = serviceID
+	}
+	strategyType := resolveServiceDeployStrategyType(service)
+
+	settings, err := shared.LoadGovernanceSettings(ctx)
+	if err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to load governance settings")
+		return
+	}
+	requiresApproval, minApprovers := shared.DeployApprovalRequired(settings, payload.Environment)
+	if requiresApproval {
+		metadata := map[string]interface{}{
+			"version":     deployVersion,
+			"branch":      deployBranch,
+			"commit":      deployVersion,
+			"environment": payload.Environment,
+			"serviceId":   serviceID,
+			"serviceName": serviceName,
+			"trigger":     trigger,
+			"action": map[string]interface{}{
+				"kind":          "service.deploy",
+				"serviceId":     serviceID,
+				"serviceName":   serviceName,
+				"environment":   payload.Environment,
+				"version":       deployVersion,
+				"branch":        deployBranch,
+				"commitSha":     deployVersion,
+				"strategyType":  strategyType,
+				"trigger":       trigger,
+				"requestedBy":   triggeredBy,
+				"resources":     resources,
+				"resourcesYaml": resourcesYaml,
+			},
+		}
+		if deployImage != "" {
+			metadata["image"] = deployImage
+			shared.MapPayload(metadata["action"])["image"] = deployImage
+		}
+		requestedBy := bson.M{
+			"id":    strings.TrimSpace(c.GetString("authUserId")),
+			"name":  triggeredBy,
+			"email": strings.TrimSpace(c.GetString("authEmail")),
+		}
+		if shared.StringValue(requestedBy["id"]) == "" {
+			requestedBy["id"] = strings.TrimSpace(shared.StringValue(requestedBy["name"]))
+		}
+		approvalDoc, existing, approvalErr := shared.CreateOrGetPendingGovernanceApproval(ctx, shared.GovernanceApprovalCreateParams{
+			Type:              shared.GovernanceApprovalTypeDeploy,
+			ResourceID:        serviceID,
+			ResourceName:      serviceName,
+			Environment:       payload.Environment,
+			RequestedBy:       requestedBy,
+			Metadata:          metadata,
+			RequiredApprovers: minApprovers,
+		})
+		if approvalErr != nil {
+			shared.RespondError(c, http.StatusInternalServerError, "Failed to create governance approval")
+			return
+		}
+		response := gin.H{
+			"queued":            false,
+			"approvalRequired":  true,
+			"approval":          approvalDoc,
+			"code":              "GOVERNANCE_APPROVAL_REQUIRED",
+			"requiredApprovers": minApprovers,
+			"message":           "Deployment requires approval before queueing.",
+		}
+		if existing {
+			response["alreadyPending"] = true
+		}
+		c.JSON(http.StatusAccepted, response)
+		return
+	}
+
+	deployID := "deploy-" + uuid.NewString()
+	now := shared.NowISO()
 
 	deployDoc := bson.M{
 		"_id":            deployID,
@@ -272,12 +348,12 @@ func CreateDeploy(c *gin.Context) {
 			"environment":  payload.Environment,
 			"version":      deployVersion,
 			"commitSha":    deployVersion,
-			"strategyType": resolveServiceDeployStrategyType(service),
+			"strategyType": strategyType,
 			"trigger":      trigger,
 		},
 		"deployId":    deployID,
 		"requestedBy": triggeredBy,
-		"serviceName": shared.StringValue(service["name"]),
+		"serviceName": serviceName,
 	}
 	opPayload := shared.MapPayload(opDoc["payload"])
 	if deployImage != "" {
@@ -351,19 +427,11 @@ func PromoteCanary(c *gin.Context) {
 	}
 
 	now := shared.NowISO()
-	strategy := shared.MapPayload(service["deploymentStrategy"])
-	if strategy == nil {
-		strategy = bson.M{}
-	}
-	strategy["canaryPercent"] = 0
-	if err := shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, bson.M{
-		"deploymentStrategy": strategy,
-		"updatedAt":          now,
+	stableCanaryPercent := 0
+	if err := operations.RepublishRulesForServiceStrategyWithOptions(ctx, serviceID, operations.RuleStrategyRepublishOptions{
+		Environment:           environment,
+		CanaryPercentOverride: &stableCanaryPercent,
 	}); err != nil {
-		shared.RespondError(c, http.StatusInternalServerError, "Failed to update service for promote")
-		return
-	}
-	if err := operations.RepublishRulesForServiceStrategy(ctx, serviceID); err != nil {
 		log.Printf("[service] failed to republish rules after canary promote (service=%s): %v", serviceID, err)
 	}
 

@@ -11,7 +11,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-func ensureBootstrapIdentity(cfg *config.Config) error {
+func ensureBootstrapIdentity(cfg *config.Config, strict bool) error {
 	if cfg == nil {
 		return nil
 	}
@@ -62,85 +62,108 @@ func ensureBootstrapIdentity(cfg *config.Config) error {
 		"avatar":      "",
 		"idpProvider": "",
 	}
-	teamSet := bson.M{
-		"id":        teamID,
-		"name":      teamName,
-		"slug":      teamSlug,
-		"updatedAt": now,
-	}
-	if !cfg.KeepAdditionalUsers {
-		teamSet["members"] = []interface{}{adminMember}
+	teamUpdate := bson.M{}
+	if strict {
+		teamSet := bson.M{
+			"id":        teamID,
+			"name":      teamName,
+			"slug":      teamSlug,
+			"updatedAt": now,
+		}
+		if !cfg.KeepAdditionalUsers {
+			teamSet["members"] = []interface{}{adminMember}
+		}
+		teamUpdate["$set"] = teamSet
+		teamUpdate["$setOnInsert"] = bson.M{"createdAt": now}
+	} else {
+		teamUpdate["$setOnInsert"] = bson.M{
+			"id":        teamID,
+			"name":      teamName,
+			"slug":      teamSlug,
+			"members":   []interface{}{adminMember},
+			"createdAt": now,
+			"updatedAt": now,
+		}
 	}
 
-	_, err = shared.Collection(shared.TeamsCollection).UpdateOne(
-		ctx,
-		bson.M{"_id": teamID},
-		bson.M{
-			"$set": teamSet,
-			"$setOnInsert": bson.M{
-				"createdAt": now,
-				"members":   []interface{}{adminMember},
-			},
-		},
-		options.Update().SetUpsert(true),
-	)
+	_, err = shared.Collection(shared.TeamsCollection).UpdateOne(ctx, bson.M{"_id": teamID}, teamUpdate, options.Update().SetUpsert(true))
 	if err != nil {
 		return err
 	}
 
-	_, err = shared.Collection(shared.UsersCollection).UpdateOne(
-		ctx,
-		bson.M{"_id": adminID},
-		bson.M{
-			"$set": bson.M{
-				"id":        adminID,
-				"name":      adminName,
-				"email":     adminEmail,
-				"role":      "admin",
-				"teamId":    teamID,
-				"teamName":  teamName,
-				"avatar":    "",
-				"password":  adminPasswordHash,
-				"updatedAt": now,
-			},
-			"$setOnInsert": bson.M{
-				"createdAt": now,
-			},
-		},
-		options.Update().SetUpsert(true),
-	)
+	userUpdate := bson.M{}
+	if strict {
+		userUpdate["$set"] = bson.M{
+			"id":        adminID,
+			"name":      adminName,
+			"email":     adminEmail,
+			"role":      "admin",
+			"teamId":    teamID,
+			"teamName":  teamName,
+			"avatar":    "",
+			"password":  adminPasswordHash,
+			"updatedAt": now,
+		}
+		userUpdate["$setOnInsert"] = bson.M{"createdAt": now}
+	} else {
+		userUpdate["$setOnInsert"] = bson.M{
+			"id":        adminID,
+			"name":      adminName,
+			"email":     adminEmail,
+			"role":      "admin",
+			"teamId":    teamID,
+			"teamName":  teamName,
+			"avatar":    "",
+			"password":  adminPasswordHash,
+			"createdAt": now,
+			"updatedAt": now,
+		}
+	}
+
+	_, err = shared.Collection(shared.UsersCollection).UpdateOne(ctx, bson.M{"_id": adminID}, userUpdate, options.Update().SetUpsert(true))
 	if err != nil {
 		return err
 	}
 
-	_, err = shared.Collection(shared.ProfileCollection).UpdateOne(
-		ctx,
-		bson.M{"_id": adminID},
-		bson.M{
-			"$set": bson.M{
-				"id":                 adminID,
-				"name":               adminName,
-				"email":              adminEmail,
-				"role":               "admin",
-				"teamId":             teamID,
-				"teamName":           teamName,
-				"identityProvider":   "",
-				"twoFactorEnabled":   false,
-				"connectedProviders": []interface{}{},
-				"sessions":           []interface{}{},
-				"updatedAt":          now,
-			},
-			"$setOnInsert": bson.M{
-				"createdAt": now,
-			},
-		},
-		options.Update().SetUpsert(true),
-	)
+	profileUpdate := bson.M{}
+	if strict {
+		profileUpdate["$set"] = bson.M{
+			"id":                 adminID,
+			"name":               adminName,
+			"email":              adminEmail,
+			"role":               "admin",
+			"teamId":             teamID,
+			"teamName":           teamName,
+			"identityProvider":   "",
+			"twoFactorEnabled":   false,
+			"connectedProviders": []interface{}{},
+			"sessions":           []interface{}{},
+			"updatedAt":          now,
+		}
+		profileUpdate["$setOnInsert"] = bson.M{"createdAt": now}
+	} else {
+		profileUpdate["$setOnInsert"] = bson.M{
+			"id":                 adminID,
+			"name":               adminName,
+			"email":              adminEmail,
+			"role":               "admin",
+			"teamId":             teamID,
+			"teamName":           teamName,
+			"identityProvider":   "",
+			"twoFactorEnabled":   false,
+			"connectedProviders": []interface{}{},
+			"sessions":           []interface{}{},
+			"createdAt":          now,
+			"updatedAt":          now,
+		}
+	}
+
+	_, err = shared.Collection(shared.ProfileCollection).UpdateOne(ctx, bson.M{"_id": adminID}, profileUpdate, options.Update().SetUpsert(true))
 	if err != nil {
 		return err
 	}
 
-	if cfg.KeepAdditionalUsers {
+	if !strict || cfg.KeepAdditionalUsers {
 		return nil
 	}
 

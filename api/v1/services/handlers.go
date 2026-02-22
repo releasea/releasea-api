@@ -1384,9 +1384,9 @@ func GetServicePods(c *gin.Context) {
 
 	namespace := observability.NamespaceForEnvironment(environment)
 
-	// Query Loki for distinct pods in the last 15 minutes
+	// Query Loki for distinct pods in the last 3 hours
 	now := time.Now().UTC()
-	from := now.Add(-15 * time.Minute)
+	from := now.Add(-3 * time.Hour)
 	query := fmt.Sprintf(`{namespace="%s", pod=~"%s-.*"}`, namespace, serviceName)
 
 	logs, err := observability.QueryLokiRange(ctx, observability.LokiURL(), query, from, now, 500)

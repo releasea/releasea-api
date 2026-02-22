@@ -26,7 +26,7 @@ func applyOperationStart(ctx context.Context, op bson.M, now string) {
 		if serviceID != "" {
 			_ = shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, bson.M{"status": "pending", "isActive": false})
 		}
-	case "service.scale", "service.restart", "service.promote-canary":
+	case "service.promote-canary":
 		serviceID := shared.StringValue(op["resourceId"])
 		if serviceID != "" {
 			_ = shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, bson.M{"status": "pending", "updatedAt": now})
@@ -133,37 +133,6 @@ func applyOperationSuccess(ctx context.Context, op bson.M, now string) error {
 			_ = shared.DeleteByID(ctx, shared.Collection(shared.RulesCollection), ruleID)
 		}
 		return nil
-	case "service.scale":
-		payload := shared.MapPayload(op["payload"])
-		replicas := shared.IntValue(payload["replicas"])
-		status := "running"
-		isActive := true
-		if replicas <= 0 {
-			status = "stopped"
-			isActive = false
-		}
-		update := bson.M{
-			"status":    status,
-			"isActive":  isActive,
-			"updatedAt": now,
-		}
-		return shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), shared.StringValue(op["resourceId"]), update)
-	case "service.restart":
-		payload := shared.MapPayload(op["payload"])
-		update := bson.M{
-			"updatedAt": now,
-		}
-		if prevStatus := shared.StringValue(payload["prevStatus"]); prevStatus != "" {
-			update["status"] = prevStatus
-		} else {
-			update["status"] = "running"
-		}
-		if _, ok := payload["prevIsActive"]; ok {
-			update["isActive"] = shared.BoolValue(payload["prevIsActive"])
-		} else {
-			update["isActive"] = true
-		}
-		return shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), shared.StringValue(op["resourceId"]), update)
 	case "service.promote-canary":
 		serviceID := shared.StringValue(op["resourceId"])
 		payload := shared.MapPayload(op["payload"])
@@ -527,19 +496,6 @@ func applyOperationFailure(ctx context.Context, op bson.M, now string) error {
 			_ = shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, bson.M{"status": "error", "isActive": false, "updatedAt": now})
 		}
 		return nil
-	case "service.scale", "service.restart":
-		payload := shared.MapPayload(op["payload"])
-		prevStatus := shared.StringValue(payload["prevStatus"])
-		update := bson.M{
-			"updatedAt": now,
-		}
-		if prevStatus != "" {
-			update["status"] = prevStatus
-		}
-		if _, ok := payload["prevIsActive"]; ok {
-			update["isActive"] = shared.BoolValue(payload["prevIsActive"])
-		}
-		return shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), shared.StringValue(op["resourceId"]), update)
 	}
 	return nil
 }

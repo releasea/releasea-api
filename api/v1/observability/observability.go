@@ -173,7 +173,7 @@ func KubeName(value string) string {
 func ParseMetricsRange(fromRaw, toRaw string) (time.Time, time.Time, time.Duration) {
 	now := time.Now().UTC()
 	end := now
-	start := now.Add(-1 * time.Hour)
+	start := now.Add(-3 * time.Hour)
 	if fromRaw != "" {
 		if parsed, err := time.Parse(time.RFC3339, fromRaw); err == nil {
 			start = parsed.UTC()

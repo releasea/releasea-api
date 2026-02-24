@@ -1,24 +1,22 @@
 package scm
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	gh "releaseaapi/api/v1/integrations/github"
+	"releaseaapi/api/v1/models"
 	"releaseaapi/api/v1/shared"
 
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
 	"gopkg.in/yaml.v3"
 )
 
@@ -27,110 +25,6 @@ const (
 	templateSourceRepo  = "templates"
 	templateManifestYML = "releasea.yaml"
 )
-
-type templateRepoRequest struct {
-	ScmCredentialID string `json:"scmCredentialId"`
-	ProjectID       string `json:"projectId"`
-	TemplateOwner   string `json:"templateOwner"`
-	TemplateRepo    string `json:"templateRepo"`
-	TemplatePath    string `json:"templatePath"`
-	Owner           string `json:"owner"`
-	Name            string `json:"name"`
-	Description     string `json:"description"`
-	Private         bool   `json:"private"`
-}
-
-type templateRepoResponse struct {
-	ID            int    `json:"id"`
-	FullName      string `json:"full_name"`
-	HTMLURL       string `json:"html_url"`
-	CloneURL      string `json:"clone_url"`
-	SSHURL        string `json:"ssh_url"`
-	DefaultBranch string `json:"default_branch"`
-	Private       bool   `json:"private"`
-	Owner         struct {
-		Login string `json:"login"`
-	} `json:"owner"`
-}
-
-type githubError struct {
-	Message string `json:"message"`
-}
-
-type githubRepoInfo struct {
-	DefaultBranch string `json:"default_branch"`
-}
-
-type githubUserInfo struct {
-	Login string `json:"login"`
-}
-
-type githubRefInfo struct {
-	Object struct {
-		Sha string `json:"sha"`
-	} `json:"object"`
-}
-
-type githubCommitInfo struct {
-	Tree struct {
-		Sha string `json:"sha"`
-	} `json:"tree"`
-}
-
-type githubTreeInfo struct {
-	Tree      []githubTreeEntry `json:"tree"`
-	Truncated bool              `json:"truncated"`
-}
-
-type githubTreeEntry struct {
-	Path string `json:"path"`
-	Sha  string `json:"sha"`
-	Type string `json:"type"`
-	Mode string `json:"mode"`
-}
-
-type githubBlobInfo struct {
-	Content  string `json:"content"`
-	Encoding string `json:"encoding"`
-}
-
-type githubCreateBlobResponse struct {
-	Sha string `json:"sha"`
-}
-
-type githubCreateTreeResponse struct {
-	Sha string `json:"sha"`
-}
-
-type githubCreateCommitResponse struct {
-	Sha string `json:"sha"`
-}
-
-type githubCreateTreeEntry struct {
-	Path string `json:"path"`
-	Mode string `json:"mode"`
-	Type string `json:"type"`
-	Sha  string `json:"sha"`
-}
-
-type templateFileContent struct {
-	Path          string
-	Mode          string
-	ContentBase64 string
-}
-
-type templateManifest struct {
-	APIVersion   string `yaml:"apiVersion"`
-	Kind         string `yaml:"kind"`
-	ID           string `yaml:"id"`
-	Name         string `yaml:"name"`
-	TemplateType string `yaml:"templateType"`
-	Source       struct {
-		Owner string `yaml:"owner"`
-		Repo  string `yaml:"repo"`
-		Path  string `yaml:"path"`
-	} `yaml:"source"`
-}
 
 func CheckTemplateRepoAvailability(c *gin.Context) {
 	owner := strings.TrimSpace(c.Query("owner"))
@@ -146,21 +40,9 @@ func CheckTemplateRepoAvailability(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
 
-	scmCred, err := resolveScmCredential(ctx, scmCredentialID, projectID)
+	token, statusCode, err := resolveGitHubToken(ctx, scmCredentialID, projectID)
 	if err != nil {
-		shared.RespondError(c, http.StatusNotFound, "SCM credential not found")
-		return
-	}
-
-	provider := strings.ToLower(shared.StringValue(scmCred["provider"]))
-	if provider != "" && provider != "github" {
-		shared.RespondError(c, http.StatusBadRequest, "SCM credential must be GitHub")
-		return
-	}
-
-	token := strings.TrimSpace(shared.StringValue(scmCred["token"]))
-	if token == "" {
-		shared.RespondError(c, http.StatusBadRequest, "SCM credential missing token")
+		shared.RespondError(c, statusCode, err.Error())
 		return
 	}
 
@@ -170,7 +52,7 @@ func CheckTemplateRepoAvailability(c *gin.Context) {
 		url.PathEscape(name),
 	)
 	client := &http.Client{Timeout: 15 * time.Second}
-	body, status, err := githubRequest(ctx, client, token, http.MethodGet, repoURL, nil)
+	body, status, err := gh.RequestWithClient(ctx, client, token, http.MethodGet, repoURL, nil)
 	if err != nil {
 		shared.RespondError(c, http.StatusBadGateway, "Failed to check repository availability")
 		return
@@ -192,7 +74,7 @@ func CheckTemplateRepoAvailability(c *gin.Context) {
 		return
 	}
 
-	if err := githubResponseError(status, body, "Failed to check repository availability"); err != nil {
+	if err := gh.ResponseError(status, body, "Failed to check repository availability"); err != nil {
 		shared.RespondError(c, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -200,48 +82,23 @@ func CheckTemplateRepoAvailability(c *gin.Context) {
 }
 
 func CreateTemplateRepo(c *gin.Context) {
-	var payload templateRepoRequest
+	var payload models.TemplateRepoRequest
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
 		return
 	}
 
-	payload.TemplateOwner = strings.TrimSpace(payload.TemplateOwner)
-	payload.TemplateRepo = strings.TrimSpace(payload.TemplateRepo)
-	payload.TemplatePath = strings.TrimSpace(payload.TemplatePath)
-	payload.Owner = strings.TrimSpace(payload.Owner)
-	payload.Name = strings.TrimSpace(payload.Name)
-	payload.Description = strings.TrimSpace(payload.Description)
-
-	if payload.TemplatePath == "" {
-		shared.RespondError(c, http.StatusBadRequest, "Template path required")
+	if err := normalizeTemplateRepoPayload(&payload); err != nil {
+		shared.RespondError(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	if payload.Owner == "" || payload.Name == "" {
-		shared.RespondError(c, http.StatusBadRequest, "New repository owner and name required")
-		return
-	}
-	payload.TemplateOwner = templateSourceOwner
-	payload.TemplateRepo = templateSourceRepo
 
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
 
-	scmCred, err := resolveScmCredential(ctx, payload.ScmCredentialID, payload.ProjectID)
+	token, statusCode, err := resolveGitHubToken(ctx, payload.ScmCredentialID, payload.ProjectID)
 	if err != nil {
-		shared.RespondError(c, http.StatusNotFound, "SCM credential not found")
-		return
-	}
-
-	provider := strings.ToLower(shared.StringValue(scmCred["provider"]))
-	if provider != "" && provider != "github" {
-		shared.RespondError(c, http.StatusBadRequest, "SCM credential must be GitHub")
-		return
-	}
-
-	token := strings.TrimSpace(shared.StringValue(scmCred["token"]))
-	if token == "" {
-		shared.RespondError(c, http.StatusBadRequest, "SCM credential missing token")
+		shared.RespondError(c, statusCode, err.Error())
 		return
 	}
 
@@ -265,28 +122,42 @@ func resolveScmCredential(ctx context.Context, scmCredentialID string, projectID
 			}
 		}
 	}
-	return findLatestPlatformCredential(ctx, shared.ScmCredentialsCollection)
+	return shared.FindLatestPlatformCredential(ctx, shared.ScmCredentialsCollection)
 }
 
-func findLatestPlatformCredential(ctx context.Context, collectionName string) (bson.M, error) {
-	col := shared.Collection(collectionName)
-	filter := bson.M{"scope": "platform"}
-	opts := options.FindOne().SetSort(bson.D{
-		{Key: "updatedAt", Value: -1},
-		{Key: "createdAt", Value: -1},
-	})
-	var result bson.M
-	err := col.FindOne(ctx, filter, opts).Decode(&result)
+func resolveGitHubToken(ctx context.Context, scmCredentialID, projectID string) (string, int, error) {
+	scmCred, err := resolveScmCredential(ctx, scmCredentialID, projectID)
 	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, err
-		}
-		return nil, err
+		return "", http.StatusNotFound, errors.New("SCM credential not found")
 	}
-	return result, nil
+	provider := strings.ToLower(shared.StringValue(scmCred["provider"]))
+	if provider != "" && provider != "github" {
+		return "", http.StatusBadRequest, errors.New("SCM credential must be GitHub")
+	}
+	token := strings.TrimSpace(shared.StringValue(scmCred["token"]))
+	if token == "" {
+		return "", http.StatusBadRequest, errors.New("SCM credential missing token")
+	}
+	return token, 0, nil
 }
 
-func createTemplateRepoFromPath(ctx context.Context, token string, payload templateRepoRequest) (*templateRepoResponse, error) {
+func normalizeTemplateRepoPayload(payload *models.TemplateRepoRequest) error {
+	payload.TemplatePath = strings.TrimSpace(payload.TemplatePath)
+	payload.Owner = strings.TrimSpace(payload.Owner)
+	payload.Name = strings.TrimSpace(payload.Name)
+	payload.Description = strings.TrimSpace(payload.Description)
+	if payload.TemplatePath == "" {
+		return errors.New("Template path required")
+	}
+	if payload.Owner == "" || payload.Name == "" {
+		return errors.New("New repository owner and name required")
+	}
+	payload.TemplateOwner = templateSourceOwner
+	payload.TemplateRepo = templateSourceRepo
+	return nil
+}
+
+func createTemplateRepoFromPath(ctx context.Context, token string, payload models.TemplateRepoRequest) (*models.TemplateRepoResponse, error) {
 	client := &http.Client{Timeout: 20 * time.Second}
 
 	templateInfo, err := fetchGithubRepoInfo(ctx, client, token, payload.TemplateOwner, payload.TemplateRepo)
@@ -309,7 +180,7 @@ func createTemplateRepoFromPath(ctx context.Context, token string, payload templ
 	if templatePath != "" {
 		prefix = templatePath + "/"
 	}
-	var files []githubTreeEntry
+	var files []models.GitHubTreeEntry
 	for _, entry := range treeEntries {
 		if entry.Type != "blob" {
 			continue
@@ -343,7 +214,7 @@ func createTemplateRepoFromPath(ctx context.Context, token string, payload templ
 		repoBranch = "main"
 	}
 
-	filesToCreate := make([]templateFileContent, 0, len(files)+1)
+	filesToCreate := make([]models.TemplateFileContent, 0, len(files)+1)
 	createdPaths := make(map[string]struct{}, len(files)+1)
 	for _, entry := range files {
 		blob, err := fetchGithubBlob(ctx, client, token, payload.TemplateOwner, payload.TemplateRepo, entry.Sha)
@@ -367,7 +238,7 @@ func createTemplateRepoFromPath(ctx context.Context, token string, payload templ
 		if mode == "" {
 			mode = "100644"
 		}
-		filesToCreate = append(filesToCreate, templateFileContent{
+		filesToCreate = append(filesToCreate, models.TemplateFileContent{
 			Path:          targetPath,
 			Mode:          mode,
 			ContentBase64: content,
@@ -377,7 +248,7 @@ func createTemplateRepoFromPath(ctx context.Context, token string, payload templ
 	if _, exists := createdPaths[".releasea/managed.json"]; !exists {
 		markerContent, err := buildReleaseaManagedMarker(payload)
 		if err == nil {
-			filesToCreate = append(filesToCreate, templateFileContent{
+			filesToCreate = append(filesToCreate, models.TemplateFileContent{
 				Path:          ".releasea/managed.json",
 				Mode:          "100644",
 				ContentBase64: markerContent,
@@ -397,14 +268,14 @@ func loadTemplateManifest(
 	ctx context.Context,
 	client *http.Client,
 	token, owner, repo string,
-	files []githubTreeEntry,
+	files []models.GitHubTreeEntry,
 	prefix string,
-) (*templateManifest, error) {
+) (*models.TemplateManifest, error) {
 	manifestPath := templateManifestYML
 	if prefix != "" {
 		manifestPath = prefix + templateManifestYML
 	}
-	var manifestEntry *githubTreeEntry
+	var manifestEntry *models.GitHubTreeEntry
 	for i := range files {
 		if files[i].Path == manifestPath {
 			manifestEntry = &files[i]
@@ -424,14 +295,14 @@ func loadTemplateManifest(
 		return nil, fmt.Errorf("Failed to decode template manifest: %w", err)
 	}
 
-	var manifest templateManifest
+	var manifest models.TemplateManifest
 	if err := yaml.Unmarshal(content, &manifest); err != nil {
 		return nil, fmt.Errorf("Invalid template manifest YAML: %w", err)
 	}
 	return &manifest, nil
 }
 
-func validateTemplateManifest(manifest *templateManifest, templatePath string) error {
+func validateTemplateManifest(manifest *models.TemplateManifest, templatePath string) error {
 	if manifest == nil {
 		return errors.New("Template manifest missing")
 	}
@@ -447,34 +318,34 @@ func validateTemplateManifest(manifest *templateManifest, templatePath string) e
 	return nil
 }
 
-func fetchGithubRepoInfo(ctx context.Context, client *http.Client, token, owner, repo string) (*githubRepoInfo, error) {
+func fetchGithubRepoInfo(ctx context.Context, client *http.Client, token, owner, repo string) (*models.GitHubRepoInfo, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo)
-	body, status, err := githubRequest(ctx, client, token, http.MethodGet, url, nil)
+	body, status, err := gh.RequestWithClient(ctx, client, token, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GitHub request failed: %w", err)
 	}
-	if err := githubResponseError(status, body, "Failed to load template repository"); err != nil {
+	if err := gh.ResponseError(status, body, "Failed to load template repository"); err != nil {
 		return nil, err
 	}
 
-	var info githubRepoInfo
+	var info models.GitHubRepoInfo
 	if err := json.Unmarshal(body, &info); err != nil {
 		return nil, errors.New("Failed to parse template repository")
 	}
 	return &info, nil
 }
 
-func fetchGithubTree(ctx context.Context, client *http.Client, token, owner, repo, branch string) ([]githubTreeEntry, error) {
+func fetchGithubTree(ctx context.Context, client *http.Client, token, owner, repo, branch string) ([]models.GitHubTreeEntry, error) {
 	refURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/refs/heads/%s", owner, repo, url.PathEscape(branch))
-	body, status, err := githubRequest(ctx, client, token, http.MethodGet, refURL, nil)
+	body, status, err := gh.RequestWithClient(ctx, client, token, http.MethodGet, refURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GitHub request failed: %w", err)
 	}
-	if err := githubResponseError(status, body, "Failed to resolve template branch"); err != nil {
+	if err := gh.ResponseError(status, body, "Failed to resolve template branch"); err != nil {
 		return nil, err
 	}
 
-	var ref githubRefInfo
+	var ref models.GitHubRefInfo
 	if err := json.Unmarshal(body, &ref); err != nil {
 		return nil, errors.New("Failed to parse template branch")
 	}
@@ -483,15 +354,15 @@ func fetchGithubTree(ctx context.Context, client *http.Client, token, owner, rep
 	}
 
 	commitURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/commits/%s", owner, repo, ref.Object.Sha)
-	body, status, err = githubRequest(ctx, client, token, http.MethodGet, commitURL, nil)
+	body, status, err = gh.RequestWithClient(ctx, client, token, http.MethodGet, commitURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GitHub request failed: %w", err)
 	}
-	if err := githubResponseError(status, body, "Failed to load template commit"); err != nil {
+	if err := gh.ResponseError(status, body, "Failed to load template commit"); err != nil {
 		return nil, err
 	}
 
-	var commit githubCommitInfo
+	var commit models.GitHubCommitInfo
 	if err := json.Unmarshal(body, &commit); err != nil {
 		return nil, errors.New("Failed to parse template commit")
 	}
@@ -500,15 +371,15 @@ func fetchGithubTree(ctx context.Context, client *http.Client, token, owner, rep
 	}
 
 	treeURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, commit.Tree.Sha)
-	body, status, err = githubRequest(ctx, client, token, http.MethodGet, treeURL, nil)
+	body, status, err = gh.RequestWithClient(ctx, client, token, http.MethodGet, treeURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GitHub request failed: %w", err)
 	}
-	if err := githubResponseError(status, body, "Failed to load template tree"); err != nil {
+	if err := gh.ResponseError(status, body, "Failed to load template tree"); err != nil {
 		return nil, err
 	}
 
-	var tree githubTreeInfo
+	var tree models.GitHubTreeInfo
 	if err := json.Unmarshal(body, &tree); err != nil {
 		return nil, errors.New("Failed to parse template tree")
 	}
@@ -518,34 +389,34 @@ func fetchGithubTree(ctx context.Context, client *http.Client, token, owner, rep
 	return tree.Tree, nil
 }
 
-func fetchGithubBlob(ctx context.Context, client *http.Client, token, owner, repo, sha string) (*githubBlobInfo, error) {
+func fetchGithubBlob(ctx context.Context, client *http.Client, token, owner, repo, sha string) (*models.GitHubBlobInfo, error) {
 	blobURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/blobs/%s", owner, repo, sha)
-	body, status, err := githubRequest(ctx, client, token, http.MethodGet, blobURL, nil)
+	body, status, err := gh.RequestWithClient(ctx, client, token, http.MethodGet, blobURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GitHub request failed: %w", err)
 	}
-	if err := githubResponseError(status, body, "Failed to load template file"); err != nil {
+	if err := gh.ResponseError(status, body, "Failed to load template file"); err != nil {
 		return nil, err
 	}
 
-	var blob githubBlobInfo
+	var blob models.GitHubBlobInfo
 	if err := json.Unmarshal(body, &blob); err != nil {
 		return nil, errors.New("Failed to parse template file")
 	}
 	return &blob, nil
 }
 
-func createGithubRepo(ctx context.Context, client *http.Client, token string, payload templateRepoRequest) (*templateRepoResponse, error) {
+func createGithubRepo(ctx context.Context, client *http.Client, token string, payload models.TemplateRepoRequest) (*models.TemplateRepoResponse, error) {
 	userURL := "https://api.github.com/user"
-	body, status, err := githubRequest(ctx, client, token, http.MethodGet, userURL, nil)
+	body, status, err := gh.RequestWithClient(ctx, client, token, http.MethodGet, userURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("GitHub request failed: %w", err)
 	}
-	if err := githubResponseError(status, body, "Failed to resolve GitHub user"); err != nil {
+	if err := gh.ResponseError(status, body, "Failed to resolve GitHub user"); err != nil {
 		return nil, err
 	}
 
-	var user githubUserInfo
+	var user models.GitHubUserInfo
 	if err := json.Unmarshal(body, &user); err != nil {
 		return nil, errors.New("Failed to parse GitHub user")
 	}
@@ -564,15 +435,15 @@ func createGithubRepo(ctx context.Context, client *http.Client, token string, pa
 		requestBody["description"] = payload.Description
 	}
 
-	body, status, err = githubRequest(ctx, client, token, http.MethodPost, endpoint, requestBody)
+	body, status, err = gh.RequestWithClient(ctx, client, token, http.MethodPost, endpoint, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("GitHub request failed: %w", err)
 	}
-	if err := githubResponseError(status, body, "Failed to create repository"); err != nil {
+	if err := gh.ResponseError(status, body, "Failed to create repository"); err != nil {
 		return nil, err
 	}
 
-	var repo templateRepoResponse
+	var repo models.TemplateRepoResponse
 	if err := json.Unmarshal(body, &repo); err != nil {
 		return nil, errors.New("Failed to parse repository response")
 	}
@@ -583,14 +454,14 @@ func createGithubInitialCommit(
 	ctx context.Context,
 	client *http.Client,
 	token, owner, repo, branch string,
-	files []templateFileContent,
-	payload templateRepoRequest,
+	files []models.TemplateFileContent,
+	payload models.TemplateRepoRequest,
 ) error {
 	if len(files) == 0 {
 		return errors.New("Template repository is empty")
 	}
 
-	treeEntries := make([]githubCreateTreeEntry, 0, len(files))
+	treeEntries := make([]models.GitHubCreateTreeEntry, 0, len(files))
 	for _, file := range files {
 		blobSha, err := createGithubBlob(ctx, client, token, owner, repo, file.ContentBase64)
 		if err != nil {
@@ -600,7 +471,7 @@ func createGithubInitialCommit(
 		if mode == "" {
 			mode = "100644"
 		}
-		treeEntries = append(treeEntries, githubCreateTreeEntry{
+		treeEntries = append(treeEntries, models.GitHubCreateTreeEntry{
 			Path: file.Path,
 			Mode: mode,
 			Type: "blob",
@@ -632,15 +503,15 @@ func createGithubBlob(ctx context.Context, client *http.Client, token, owner, re
 		"content":  contentBase64,
 		"encoding": "base64",
 	}
-	body, status, err := githubRequest(ctx, client, token, http.MethodPost, blobURL, requestBody)
+	body, status, err := gh.RequestWithClient(ctx, client, token, http.MethodPost, blobURL, requestBody)
 	if err != nil {
 		return "", fmt.Errorf("GitHub request failed: %w", err)
 	}
-	if err := githubResponseError(status, body, "Failed to create template blob"); err != nil {
+	if err := gh.ResponseError(status, body, "Failed to create template blob"); err != nil {
 		return "", err
 	}
 
-	var blob githubCreateBlobResponse
+	var blob models.GitHubCreateBlobResponse
 	if err := json.Unmarshal(body, &blob); err != nil {
 		return "", errors.New("Failed to parse created blob")
 	}
@@ -654,21 +525,21 @@ func createGithubTree(
 	ctx context.Context,
 	client *http.Client,
 	token, owner, repo string,
-	entries []githubCreateTreeEntry,
+	entries []models.GitHubCreateTreeEntry,
 ) (string, error) {
 	treeURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees", owner, repo)
 	requestBody := map[string]interface{}{
 		"tree": entries,
 	}
-	body, status, err := githubRequest(ctx, client, token, http.MethodPost, treeURL, requestBody)
+	body, status, err := gh.RequestWithClient(ctx, client, token, http.MethodPost, treeURL, requestBody)
 	if err != nil {
 		return "", fmt.Errorf("GitHub request failed: %w", err)
 	}
-	if err := githubResponseError(status, body, "Failed to create template tree"); err != nil {
+	if err := gh.ResponseError(status, body, "Failed to create template tree"); err != nil {
 		return "", err
 	}
 
-	var tree githubCreateTreeResponse
+	var tree models.GitHubCreateTreeResponse
 	if err := json.Unmarshal(body, &tree); err != nil {
 		return "", errors.New("Failed to parse created tree")
 	}
@@ -695,15 +566,15 @@ func createGithubCommit(
 		"author":    botIdentity,
 		"committer": botIdentity,
 	}
-	body, status, err := githubRequest(ctx, client, token, http.MethodPost, commitURL, requestBody)
+	body, status, err := gh.RequestWithClient(ctx, client, token, http.MethodPost, commitURL, requestBody)
 	if err != nil {
 		return "", fmt.Errorf("GitHub request failed: %w", err)
 	}
-	if err := githubResponseError(status, body, "Failed to create initial commit"); err != nil {
+	if err := gh.ResponseError(status, body, "Failed to create initial commit"); err != nil {
 		return "", err
 	}
 
-	var commit githubCreateCommitResponse
+	var commit models.GitHubCreateCommitResponse
 	if err := json.Unmarshal(body, &commit); err != nil {
 		return "", errors.New("Failed to parse created commit")
 	}
@@ -724,11 +595,11 @@ func updateGithubBranchRef(ctx context.Context, client *http.Client, token, owne
 		"sha":   sha,
 		"force": true,
 	}
-	body, status, err := githubRequest(ctx, client, token, http.MethodPatch, updateURL, updateBody)
+	body, status, err := gh.RequestWithClient(ctx, client, token, http.MethodPatch, updateURL, updateBody)
 	if err != nil {
 		return fmt.Errorf("GitHub request failed: %w", err)
 	}
-	if err := githubResponseError(status, body, "Failed to update repository branch"); err != nil {
+	if err := gh.ResponseError(status, body, "Failed to update repository branch"); err != nil {
 		return err
 	}
 	return nil
@@ -736,87 +607,14 @@ func updateGithubBranchRef(ctx context.Context, client *http.Client, token, owne
 
 func deleteGithubRepo(ctx context.Context, client *http.Client, token, owner, repo string) error {
 	endpoint := fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo)
-	body, status, err := githubRequest(ctx, client, token, http.MethodDelete, endpoint, nil)
+	body, status, err := gh.RequestWithClient(ctx, client, token, http.MethodDelete, endpoint, nil)
 	if err != nil {
 		return err
 	}
 	if status == http.StatusNotFound || status == http.StatusNoContent || (status >= 200 && status < 300) {
 		return nil
 	}
-	return githubResponseError(status, body, "Failed to clean up repository after template copy error")
-}
-
-func githubRequest(ctx context.Context, client *http.Client, token, method, url string, payload interface{}) ([]byte, int, error) {
-	var body io.Reader
-	if payload != nil {
-		rawBody, err := json.Marshal(payload)
-		if err != nil {
-			return nil, 0, err
-		}
-		body = bytes.NewReader(rawBody)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
-	if err != nil {
-		return nil, 0, err
-	}
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "releasea-api")
-	if payload != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, resp.StatusCode, err
-	}
-	return bodyBytes, resp.StatusCode, nil
-}
-
-func githubResponseError(status int, body []byte, fallback string) error {
-	if status >= 200 && status < 300 {
-		return nil
-	}
-	msg := githubErrorMessage(body)
-	if msg == "" {
-		msg = fallback
-	}
-	return errors.New(msg)
-}
-
-func githubErrorMessage(body []byte) string {
-	var ghErr githubError
-	if err := json.Unmarshal(body, &ghErr); err == nil {
-		if msg := strings.TrimSpace(ghErr.Message); msg != "" {
-			return msg
-		}
-	}
-	return ""
-}
-
-type commitEntry struct {
-	Sha     string `json:"sha"`
-	Message string `json:"message"`
-	Author  string `json:"author"`
-	Date    string `json:"date"`
-}
-
-type githubCommitListEntry struct {
-	Sha    string `json:"sha"`
-	Commit struct {
-		Message string `json:"message"`
-		Author  struct {
-			Name string `json:"name"`
-			Date string `json:"date"`
-		} `json:"author"`
-	} `json:"commit"`
+	return gh.ResponseError(status, body, "Failed to clean up repository after template copy error")
 }
 
 func ListCommits(c *gin.Context) {
@@ -837,15 +635,9 @@ func ListCommits(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
 
-	scmCred, err := resolveScmCredential(ctx, scmCredentialID, projectID)
+	token, statusCode, err := resolveGitHubToken(ctx, scmCredentialID, projectID)
 	if err != nil {
-		shared.RespondError(c, http.StatusNotFound, "SCM credential not found")
-		return
-	}
-
-	token := strings.TrimSpace(shared.StringValue(scmCred["token"]))
-	if token == "" {
-		shared.RespondError(c, http.StatusBadRequest, "SCM credential missing token")
+		shared.RespondError(c, statusCode, err.Error())
 		return
 	}
 
@@ -853,29 +645,29 @@ func ListCommits(c *gin.Context) {
 	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/commits?sha=%s&per_page=20",
 		url.PathEscape(owner), url.PathEscape(repo), url.QueryEscape(branch))
 
-	body, status, err := githubRequest(ctx, client, token, http.MethodGet, apiURL, nil)
+	body, status, err := gh.RequestWithClient(ctx, client, token, http.MethodGet, apiURL, nil)
 	if err != nil {
 		shared.RespondError(c, http.StatusBadGateway, "Failed to fetch commits from GitHub")
 		return
 	}
-	if err := githubResponseError(status, body, "Failed to fetch commits"); err != nil {
+	if err := gh.ResponseError(status, body, "Failed to fetch commits"); err != nil {
 		shared.RespondError(c, http.StatusBadGateway, err.Error())
 		return
 	}
 
-	var ghCommits []githubCommitListEntry
+	var ghCommits []models.GitHubCommitListEntry
 	if err := json.Unmarshal(body, &ghCommits); err != nil {
 		shared.RespondError(c, http.StatusBadGateway, "Failed to parse commits response")
 		return
 	}
 
-	commits := make([]commitEntry, 0, len(ghCommits))
+	commits := make([]models.CommitEntry, 0, len(ghCommits))
 	for _, gh := range ghCommits {
 		message := gh.Commit.Message
 		if idx := strings.Index(message, "\n"); idx > 0 {
 			message = message[:idx]
 		}
-		commits = append(commits, commitEntry{
+		commits = append(commits, models.CommitEntry{
 			Sha:     gh.Sha,
 			Message: message,
 			Author:  gh.Commit.Author.Name,
@@ -886,7 +678,7 @@ func ListCommits(c *gin.Context) {
 	c.JSON(http.StatusOK, commits)
 }
 
-func buildReleaseaManagedMarker(payload templateRepoRequest) (string, error) {
+func buildReleaseaManagedMarker(payload models.TemplateRepoRequest) (string, error) {
 	marker := map[string]interface{}{
 		"managedBy":     "releasea-platform",
 		"projectId":     payload.ProjectID,
@@ -903,7 +695,7 @@ func buildReleaseaManagedMarker(payload templateRepoRequest) (string, error) {
 	return base64.StdEncoding.EncodeToString(raw), nil
 }
 
-func decodeGithubBlobContent(blob *githubBlobInfo) ([]byte, error) {
+func decodeGithubBlobContent(blob *models.GitHubBlobInfo) ([]byte, error) {
 	if blob == nil {
 		return nil, errors.New("blob missing")
 	}

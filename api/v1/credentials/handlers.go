@@ -9,32 +9,13 @@ import (
 	"strings"
 
 	"releaseaapi/api/v1/deploys"
+	"releaseaapi/api/v1/models"
 	"releaseaapi/api/v1/shared"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo/options"
 )
-
-type credentialPayload struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Provider  string `json:"provider"`
-	Scope     string `json:"scope"`
-	ProjectID string `json:"projectId"`
-	ServiceID string `json:"serviceId"`
-
-	AuthType   string `json:"authType"`
-	Token      string `json:"token"`
-	PrivateKey string `json:"privateKey"`
-
-	RegistryUrl string `json:"registryUrl"`
-	Username    string `json:"username"`
-	Password    string `json:"password"`
-
-	Notes string `json:"notes"`
-}
 
 func GetScmCredentials(c *gin.Context) {
 	filter := buildCredentialFilter(c)
@@ -52,7 +33,7 @@ func GetScmCredentials(c *gin.Context) {
 }
 
 func CreateScmCredential(c *gin.Context) {
-	var payload credentialPayload
+	var payload models.CredentialPayload
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
 		return
@@ -106,7 +87,7 @@ func UpdateScmCredential(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Credential ID required")
 		return
 	}
-	var payload credentialPayload
+	var payload models.CredentialPayload
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
 		return
@@ -188,7 +169,7 @@ func GetRegistryCredentials(c *gin.Context) {
 }
 
 func CreateRegistryCredential(c *gin.Context) {
-	var payload credentialPayload
+	var payload models.CredentialPayload
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
 		return
@@ -235,7 +216,7 @@ func UpdateRegistryCredential(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Credential ID required")
 		return
 	}
-	var payload credentialPayload
+	var payload models.CredentialPayload
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
 		return
@@ -323,56 +304,25 @@ func WorkerCredentials(c *gin.Context) {
 		shared.RespondError(c, http.StatusNotFound, "Service not found")
 		return
 	}
-	projectID := shared.StringValue(service["projectId"])
-	var project bson.M
-	if projectID != "" {
-		project, _ = shared.FindOne(ctx, shared.Collection(shared.ProjectsCollection), bson.M{"id": projectID})
+	serviceModel := models.ServiceFromBSON(service)
+	var projectModel *models.Project
+	if serviceModel.ProjectID != "" {
+		project, _ := shared.FindOne(ctx, shared.Collection(shared.ProjectsCollection), bson.M{"id": serviceModel.ProjectID})
+		if project != nil {
+			projectValue := models.ProjectFromBSON(project)
+			projectModel = &projectValue
+		}
 	}
 
-	scmCred, _ := resolveScmCredential(ctx, service, project)
-	regCred, _ := resolveRegistryCredential(ctx, service, project)
+	scmCred, _ := resolveScmCredential(ctx, serviceModel, projectModel)
+	regCred, _ := resolveRegistryCredential(ctx, serviceModel, projectModel)
 	template, _ := deploys.ResolveDeployTemplate(ctx, service)
 	secretProvider, _ := deploys.ResolveSecretProvider(ctx, service)
 
-	logWorkerCredentials(shared.StringValue(service["id"]), scmCred, regCred)
+	logWorkerCredentials(serviceModel.ID, scmCred, regCred)
 
 	c.JSON(http.StatusOK, gin.H{
-		"service": map[string]interface{}{
-			"id":                 shared.StringValue(service["id"]),
-			"name":               shared.StringValue(service["name"]),
-			"type":               shared.StringValue(service["type"]),
-			"sourceType":         shared.StringValue(service["sourceType"]),
-			"repoUrl":            shared.StringValue(service["repoUrl"]),
-			"branch":             shared.StringValue(service["branch"]),
-			"rootDir":            shared.StringValue(service["rootDir"]),
-			"dockerImage":        shared.StringValue(service["dockerImage"]),
-			"dockerContext":      shared.StringValue(service["dockerContext"]),
-			"dockerfilePath":     shared.StringValue(service["dockerfilePath"]),
-			"dockerCommand":      shared.StringValue(service["dockerCommand"]),
-			"preDeployCommand":   shared.StringValue(service["preDeployCommand"]),
-			"framework":          shared.StringValue(service["framework"]),
-			"installCommand":     shared.StringValue(service["installCommand"]),
-			"buildCommand":       shared.StringValue(service["buildCommand"]),
-			"outputDir":          shared.StringValue(service["outputDir"]),
-			"cacheTtl":           shared.StringValue(service["cacheTtl"]),
-			"scheduleCron":       shared.StringValue(service["scheduleCron"]),
-			"scheduleTimezone":   shared.StringValue(service["scheduleTimezone"]),
-			"scheduleCommand":    shared.StringValue(service["scheduleCommand"]),
-			"scheduleRetries":    shared.StringValue(service["scheduleRetries"]),
-			"scheduleTimeout":    shared.StringValue(service["scheduleTimeout"]),
-			"healthCheckPath":    shared.StringValue(service["healthCheckPath"]),
-			"port":               shared.IntValue(service["port"]),
-			"replicas":           shared.IntValue(service["replicas"]),
-			"minReplicas":        shared.IntValue(service["minReplicas"]),
-			"maxReplicas":        shared.IntValue(service["maxReplicas"]),
-			"cpu":                shared.IntValue(service["cpu"]),
-			"memory":             shared.IntValue(service["memory"]),
-			"deploymentStrategy": service["deploymentStrategy"],
-			"environment":        service["environment"],
-			"deployTemplateId":   shared.StringValue(service["deployTemplateId"]),
-			"secretProviderId":   shared.StringValue(service["secretProviderId"]),
-			"repoManaged":        shared.BoolValue(service["repoManaged"]),
-		},
+		"service":        serviceModel.ToWorkerPayload(),
 		"scm":            scmCred,
 		"registry":       regCred,
 		"template":       template,
@@ -380,43 +330,28 @@ func WorkerCredentials(c *gin.Context) {
 	})
 }
 
-func resolveScmCredential(ctx context.Context, service bson.M, project bson.M) (bson.M, error) {
-	if id := shared.StringValue(service["scmCredentialId"]); id != "" {
+func resolveScmCredential(ctx context.Context, service models.Service, project *models.Project) (bson.M, error) {
+	if id := strings.TrimSpace(service.SCMCredentialID); id != "" {
 		return shared.FindOne(ctx, shared.Collection(shared.ScmCredentialsCollection), bson.M{"id": id})
 	}
 	if project != nil {
-		if id := shared.StringValue(project["scmCredentialId"]); id != "" {
+		if id := strings.TrimSpace(project.SCMCredentialID); id != "" {
 			return shared.FindOne(ctx, shared.Collection(shared.ScmCredentialsCollection), bson.M{"id": id})
 		}
 	}
-	return findLatestPlatformCredential(ctx, shared.ScmCredentialsCollection)
+	return shared.FindLatestPlatformCredential(ctx, shared.ScmCredentialsCollection)
 }
 
-func resolveRegistryCredential(ctx context.Context, service bson.M, project bson.M) (bson.M, error) {
-	if id := shared.StringValue(service["registryCredentialId"]); id != "" {
+func resolveRegistryCredential(ctx context.Context, service models.Service, project *models.Project) (bson.M, error) {
+	if id := strings.TrimSpace(service.RegistryCredentialID); id != "" {
 		return shared.FindOne(ctx, shared.Collection(shared.RegistryCredentialsCollection), bson.M{"id": id})
 	}
 	if project != nil {
-		if id := shared.StringValue(project["registryCredentialId"]); id != "" {
+		if id := strings.TrimSpace(project.RegistryCredentialID); id != "" {
 			return shared.FindOne(ctx, shared.Collection(shared.RegistryCredentialsCollection), bson.M{"id": id})
 		}
 	}
-	return findLatestPlatformCredential(ctx, shared.RegistryCredentialsCollection)
-}
-
-func findLatestPlatformCredential(ctx context.Context, collectionName string) (bson.M, error) {
-	col := shared.Collection(collectionName)
-	filter := bson.M{"scope": "platform"}
-	opts := options.FindOne().SetSort(bson.D{
-		{Key: "updatedAt", Value: -1},
-		{Key: "createdAt", Value: -1},
-	})
-	var result bson.M
-	err := col.FindOne(ctx, filter, opts).Decode(&result)
-	if err != nil {
-		return nil, err
-	}
-	return result, nil
+	return shared.FindLatestPlatformCredential(ctx, shared.RegistryCredentialsCollection)
 }
 
 func buildCredentialFilter(c *gin.Context) bson.M {

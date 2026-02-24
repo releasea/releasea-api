@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"releaseaapi/api/v1/deploys"
+	gh "releaseaapi/api/v1/integrations/github"
+	"releaseaapi/api/v1/models"
 	"releaseaapi/api/v1/operations"
 	"releaseaapi/api/v1/shared"
 
@@ -544,10 +546,6 @@ func resolveServiceDeployStrategyType(service bson.M) string {
 	}
 }
 
-type githubCommitHeadResponse struct {
-	Sha string `json:"sha"`
-}
-
 func isDeployVersionAlias(version string) bool {
 	switch strings.ToLower(strings.TrimSpace(version)) {
 	case "", "latest", "head":
@@ -781,7 +779,7 @@ func isImageReference(value string) bool {
 
 func resolveLatestServiceCommitSHA(ctx context.Context, service bson.M, branch string) (string, error) {
 	repoURL := strings.TrimSpace(shared.StringValue(service["repoUrl"]))
-	repo, ok := parseGithubRepo(repoURL)
+	repo, ok := gh.ParseRepo(repoURL)
 	if !ok {
 		return "", errors.New("repository URL is not a valid GitHub repository")
 	}
@@ -814,15 +812,15 @@ func resolveLatestServiceCommitSHA(ctx context.Context, service bson.M, branch s
 		url.PathEscape(repo.Name),
 		url.PathEscape(branch),
 	)
-	body, status, err := githubRequest(ctx, token, http.MethodGet, apiURL, nil)
+	body, status, err := gh.Request(ctx, token, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("GitHub request failed: %w", err)
 	}
-	if err := githubResponseError(status, body, "Failed to fetch latest commit"); err != nil {
+	if err := gh.ResponseError(status, body, "Failed to fetch latest commit"); err != nil {
 		return "", err
 	}
 
-	var commitResponse githubCommitHeadResponse
+	var commitResponse models.GitHubCommitHeadResponse
 	if err := json.Unmarshal(body, &commitResponse); err != nil {
 		return "", fmt.Errorf("failed to parse latest commit response: %w", err)
 	}

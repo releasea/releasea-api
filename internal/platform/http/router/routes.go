@@ -52,7 +52,7 @@ func SetupRoutes(r *gin.Engine) {
 	corsConfig := cors.Config{
 		AllowOrigins:     corsOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Requested-With", "X-Request-Id", "X-Request-ID", "X-Correlation-ID"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Requested-With", "X-Request-Id", "X-Request-ID", "X-Correlation-ID", "X-CSRF-Token", "Idempotency-Key"},
 		ExposeHeaders:    []string{"Authorization"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,

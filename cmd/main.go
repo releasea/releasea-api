@@ -2,10 +2,10 @@ package main
 
 import (
 	"log"
-	"releaseaapi/api/v1"
-	"releaseaapi/client"
-	"releaseaapi/config"
-	"releaseaapi/services"
+	"releaseaapi/internal/platform/bootstrap"
+	"releaseaapi/internal/platform/config"
+	"releaseaapi/internal/platform/http/router"
+	"releaseaapi/internal/platform/storage/mongo"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
@@ -16,10 +16,10 @@ func main() {
 	cfg := config.LoadConfig()
 
 	// Initialize Mongo (fatal if it fails)
-	client.Mongo()
+	mongostore.Mongo()
 
 	// Ensure required initial data
-	services.Setup(cfg)
+	bootstrap.Setup(cfg)
 
 	// Start the Gin API
 	r := gin.New()
@@ -27,6 +27,6 @@ func main() {
 		log.Fatalf("failed to set trusted proxies: %v", err)
 	}
 	r.Use(gin.Logger(), gin.Recovery())
-	v1.SetupRoutes(r)
+	router.SetupRoutes(r)
 	r.Run(":" + cfg.Port)
 }

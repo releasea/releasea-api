@@ -10,6 +10,12 @@ const (
 	HeaderContentType   = "Content-Type"
 	HeaderAccept        = "Accept"
 	HeaderUserAgent     = "User-Agent"
+	HeaderRequestID     = "X-Request-ID"
+	HeaderRequestIDAlt  = "X-Request-Id"
+	HeaderCorrelationID = "X-Correlation-ID"
+	HeaderRequestedWith = "X-Requested-With"
+	HeaderCSRFToken     = "X-CSRF-Token"
+	HeaderIdempotency   = "Idempotency-Key"
 
 	ContentTypeJSON           = "application/json"
 	ContentTypeFormURLEncoded = "application/x-www-form-urlencoded"

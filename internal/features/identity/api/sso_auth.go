@@ -257,14 +257,15 @@ func ExchangeSSOTicket(c *gin.Context) {
 	user := shared.MapPayload(doc["user"])
 	token := shared.StringValue(doc["token"])
 	refreshToken := shared.StringValue(doc["refreshToken"])
-	if len(user) == 0 || token == "" {
+	if len(user) == 0 || token == "" || strings.TrimSpace(refreshToken) == "" {
 		shared.RespondError(c, http.StatusUnauthorized, "Invalid or expired SSO ticket")
 		return
 	}
+	platformauth.SetRefreshCookie(c, refreshToken)
+	platformauth.EnsureCSRFToken(c)
 	c.JSON(http.StatusOK, gin.H{
-		"user":         user,
-		"token":        token,
-		"refreshToken": refreshToken,
+		"user":  user,
+		"token": token,
 	})
 }
 

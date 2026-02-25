@@ -47,6 +47,8 @@ func Login(c *gin.Context) {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to issue token")
 		return
 	}
+	platformauth.SetRefreshCookie(c, refreshToken)
+	platformauth.EnsureCSRFToken(c)
 	shared.RecordAuditEvent(ctx, shared.AuditEvent{
 		Action:       "auth.login",
 		ResourceType: "user",
@@ -56,7 +58,7 @@ func Login(c *gin.Context) {
 		ActorRole:    shared.StringValue(user["role"]),
 		Source:       "auth",
 	})
-	c.JSON(http.StatusOK, gin.H{"user": userResponse, "token": token, "refreshToken": refreshToken})
+	c.JSON(http.StatusOK, gin.H{"user": userResponse, "token": token})
 }
 
 func Signup(c *gin.Context) {
@@ -134,6 +136,8 @@ func Signup(c *gin.Context) {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to issue token")
 		return
 	}
+	platformauth.SetRefreshCookie(c, refreshToken)
+	platformauth.EnsureCSRFToken(c)
 	shared.RecordAuditEvent(ctx, shared.AuditEvent{
 		Action:       "auth.signup",
 		ResourceType: "user",
@@ -143,19 +147,20 @@ func Signup(c *gin.Context) {
 		ActorRole:    "developer",
 		Source:       "auth",
 	})
-	c.JSON(http.StatusOK, gin.H{"user": userResponse, "token": token, "refreshToken": refreshToken})
+	c.JSON(http.StatusOK, gin.H{"user": userResponse, "token": token})
 }
 
 func Logout(c *gin.Context) {
-	var payload authmodels.RefreshTokenPayload
-	_ = c.ShouldBindJSON(&payload)
+	refreshToken := platformauth.ReadRefreshCookieToken(c)
 
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
 
-	if strings.TrimSpace(payload.RefreshToken) != "" {
-		_ = platformauth.RevokeSessionToken(ctx, payload.RefreshToken)
+	if refreshToken != "" {
+		_ = platformauth.RevokeSessionToken(ctx, refreshToken)
 	}
+	platformauth.ClearRefreshCookie(c)
+	platformauth.ClearCSRFCookie(c)
 
 	if bearer := extractBearer(c.GetHeader("Authorization")); bearer != "" {
 		if claims, err := platformauth.ParseAuthToken(bearer); err == nil {
@@ -184,12 +189,8 @@ func Logout(c *gin.Context) {
 }
 
 func Refresh(c *gin.Context) {
-	var payload authmodels.RefreshTokenPayload
-	if err := c.ShouldBindJSON(&payload); err != nil {
-		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
-		return
-	}
-	if strings.TrimSpace(payload.RefreshToken) == "" {
+	refreshToken := platformauth.ReadRefreshCookieToken(c)
+	if refreshToken == "" {
 		shared.RespondError(c, http.StatusBadRequest, "Refresh token required")
 		return
 	}
@@ -197,14 +198,18 @@ func Refresh(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
 
-	token, nextRefresh, user, err := platformauth.RefreshSessionTokens(ctx, payload.RefreshToken, platformauth.SessionMeta{
+	token, nextRefresh, user, err := platformauth.RefreshSessionTokens(ctx, refreshToken, platformauth.SessionMeta{
 		IP:        c.ClientIP(),
 		UserAgent: c.GetHeader("User-Agent"),
 	})
 	if err != nil {
+		platformauth.ClearRefreshCookie(c)
+		platformauth.ClearCSRFCookie(c)
 		shared.RespondError(c, http.StatusUnauthorized, "Invalid refresh token")
 		return
 	}
+	platformauth.SetRefreshCookie(c, nextRefresh)
+	platformauth.EnsureCSRFToken(c)
 	shared.RecordAuditEvent(ctx, shared.AuditEvent{
 		Action:       "auth.refresh",
 		ResourceType: "user",
@@ -215,10 +220,18 @@ func Refresh(c *gin.Context) {
 		Source:       "auth",
 	})
 	c.JSON(http.StatusOK, gin.H{
-		"user":         sanitizeUser(user),
-		"token":        token,
-		"refreshToken": nextRefresh,
+		"user":  sanitizeUser(user),
+		"token": token,
 	})
+}
+
+func CSRFToken(c *gin.Context) {
+	token := platformauth.EnsureCSRFToken(c)
+	if token == "" {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to issue CSRF token")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"csrfToken": token})
 }
 
 func RequestPasswordReset(c *gin.Context) {

@@ -27,6 +27,7 @@ import (
 	"releaseaapi/internal/features/templates/api"
 	"releaseaapi/internal/features/workers/api"
 	platformauth "releaseaapi/internal/platform/auth"
+	platformsecurity "releaseaapi/internal/platform/http/security"
 	"releaseaapi/internal/platform/shared"
 
 	"github.com/gin-contrib/cors"
@@ -51,7 +52,7 @@ func SetupRoutes(r *gin.Engine) {
 	corsConfig := cors.Config{
 		AllowOrigins:     corsOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Requested-With", "X-Request-Id"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Requested-With", "X-Request-Id", "X-Request-ID", "X-Correlation-ID"},
 		ExposeHeaders:    []string{"Authorization"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
@@ -73,10 +74,12 @@ func SetupRoutes(r *gin.Engine) {
 	r.Use(cors.New(corsConfig))
 
 	v1 := r.Group("/api/v1")
+	v1.Use(platformsecurity.RequiredBrowserHeadersMiddleware())
 	registerPublicRoutes(v1)
 
 	protected := v1.Group("/")
 	protected.Use(platformauth.AuthMiddleware())
+	protected.Use(platformsecurity.CSRFMiddlewareForUserMutations())
 	registerProtectedRoutes(protected)
 }
 
@@ -96,10 +99,11 @@ func registerPublicRoutes(rg *gin.RouterGroup) {
 	rg.GET("/health", shared.Health)
 	authGroup := rg.Group("/auth")
 	authGroup.Use(platformauth.AuthRateLimitMiddleware())
+	authGroup.GET("/csrf", auth.CSRFToken)
 	authGroup.POST("/login", auth.Login)
 	authGroup.POST("/signup", auth.Signup)
-	authGroup.POST("/logout", auth.Logout)
-	authGroup.POST("/refresh", auth.Refresh)
+	authGroup.POST("/logout", platformsecurity.CSRFMiddleware(), auth.Logout)
+	authGroup.POST("/refresh", platformsecurity.CSRFMiddleware(), auth.Refresh)
 	authGroup.POST("/password/reset", auth.RequestPasswordReset)
 	authGroup.GET("/password/reset/validate", auth.ValidatePasswordReset)
 	authGroup.POST("/password/reset/confirm", auth.ConfirmPasswordReset)
@@ -175,8 +179,8 @@ func registerServiceRoutes(rg *gin.RouterGroup) {
 	rg.GET("/services/:id/metrics", services.GetServiceMetrics)
 	rg.GET("/services/:id/logs", services.GetServiceLogs)
 	rg.GET("/services/:id/pods", services.GetServicePods)
-	rg.POST("/services/:id/deploys", services.CreateDeploy)
-	rg.POST("/services/:id/promote-canary", services.PromoteCanary)
+	rg.POST("/services/:id/deploys", platformsecurity.RequireIdempotencyKey(), services.CreateDeploy)
+	rg.POST("/services/:id/promote-canary", platformsecurity.RequireIdempotencyKey(), services.PromoteCanary)
 	rg.GET("/services/:id/builds", services.GetServiceBuilds)
 }
 

@@ -6,17 +6,6 @@ REST API server for the Releasea platform (Go + Gin + MongoDB).
 
 The API is the control plane for services, deploy operations, workers, governance, identity, and real-time status streaming.
 
-## Architecture
-
-- Unified API/Worker architecture contract:
-  - [../docs/architecture/releasea-api-worker-unified-contract.md](../docs/architecture/releasea-api-worker-unified-contract.md)
-- Target package-by-feature structure and dependency rules:
-  - [../docs/architecture/releasea-api-package-by-feature-target.md](../docs/architecture/releasea-api-package-by-feature-target.md)
-- Quality/governance standard and review checklist:
-  - [../docs/architecture/releasea-api-quality-governance.md](../docs/architecture/releasea-api-quality-governance.md)
-- Unit test goals by feature:
-  - [../docs/testing/releasea-api-unit-tests-by-feature.md](../docs/testing/releasea-api-unit-tests-by-feature.md)
-
 ## Running Locally
 
 ```bash

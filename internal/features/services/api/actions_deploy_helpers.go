@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	deploys "releaseaapi/internal/features/deploys/api"
-	"releaseaapi/internal/features/operations/api"
+	operations "releaseaapi/internal/features/operations/api"
 	"releaseaapi/internal/platform/shared"
 
 	"github.com/gin-gonic/gin"

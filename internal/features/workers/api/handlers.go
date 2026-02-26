@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"releaseaapi/internal/features/operations/api"
+	operations "releaseaapi/internal/features/operations/api"
 	platformauth "releaseaapi/internal/platform/auth"
 	operationqueue "releaseaapi/internal/platform/queue"
 	"releaseaapi/internal/platform/shared"

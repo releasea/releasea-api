@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	credentialmodels "releaseaapi/internal/features/credentials/models"
-	"releaseaapi/internal/features/deploys/api"
+	deploys "releaseaapi/internal/features/deploys/api"
 	platformmodels "releaseaapi/internal/platform/models"
 	"releaseaapi/internal/platform/shared"
 

@@ -14,7 +14,7 @@ import (
 	httpheaders "releaseaapi/internal/platform/http/headers"
 
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
+	jwt "github.com/golang-jwt/jwt/v5"
 	"go.mongodb.org/mongo-driver/bson"
 	"golang.org/x/crypto/bcrypt"
 	"releaseaapi/internal/platform/shared"

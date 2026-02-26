@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"releaseaapi/internal/features/operations/api"
+	operations "releaseaapi/internal/features/operations/api"
 	operationqueue "releaseaapi/internal/platform/queue"
 	"releaseaapi/internal/platform/shared"
 

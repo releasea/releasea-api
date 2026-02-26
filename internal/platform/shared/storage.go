@@ -6,7 +6,7 @@ import (
 	"log"
 	"time"
 
-	"releaseaapi/internal/platform/storage/mongo"
+	mongostore "releaseaapi/internal/platform/storage/mongo"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"

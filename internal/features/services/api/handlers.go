@@ -861,7 +861,7 @@ func DeleteService(c *gin.Context) {
 		return
 	}
 
-	activeDeploys, err := shared.Collection(shared.DeploysCollection).CountDocuments(ctx, bson.M{
+	activeDeploys, err := shared.FindAll(ctx, shared.Collection(shared.DeploysCollection), bson.M{
 		"serviceId": serviceID,
 		"status": bson.M{
 			"$in": operations.DeployNonTerminalStatuses(),
@@ -871,9 +871,11 @@ func DeleteService(c *gin.Context) {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to validate active deploys")
 		return
 	}
-	if activeDeploys > 0 {
-		shared.RespondError(c, http.StatusConflict, "Service has deploys in progress")
-		return
+	for _, deploy := range activeDeploys {
+		if deployBlocksServiceDeletion(deploy) {
+			shared.RespondError(c, http.StatusConflict, "Service has deploys in progress")
+			return
+		}
 	}
 
 	rules, err := shared.FindAll(ctx, shared.Collection(shared.RulesCollection), bson.M{"serviceId": serviceID})
@@ -934,6 +936,17 @@ func DeleteService(c *gin.Context) {
 	})
 
 	c.JSON(http.StatusAccepted, gin.H{"status": "deleting"})
+}
+
+func deployBlocksServiceDeletion(deploy bson.M) bool {
+	status := operations.NormalizeDeployStatus(shared.StringValue(deploy["status"]))
+	if status == "" {
+		return false
+	}
+	if status != operations.DeployStatusRollback {
+		return true
+	}
+	return strings.TrimSpace(shared.StringValue(deploy["finishedAt"])) == ""
 }
 
 func GetServiceMetrics(c *gin.Context) {

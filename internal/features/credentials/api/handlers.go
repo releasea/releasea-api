@@ -16,6 +16,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 func GetScmCredentials(c *gin.Context) {
@@ -147,8 +149,13 @@ func DeleteScmCredential(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
-	if err := shared.DeleteByID(ctx, shared.Collection(shared.ScmCredentialsCollection), credID); err != nil {
+	deleted, err := deleteCredentialByIDOrLegacyObjectID(ctx, shared.Collection(shared.ScmCredentialsCollection), credID)
+	if err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to delete SCM credential")
+		return
+	}
+	if !deleted {
+		shared.RespondError(c, http.StatusNotFound, "SCM credential not found")
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -276,8 +283,13 @@ func DeleteRegistryCredential(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
-	if err := shared.DeleteByID(ctx, shared.Collection(shared.RegistryCredentialsCollection), credID); err != nil {
+	deleted, err := deleteCredentialByIDOrLegacyObjectID(ctx, shared.Collection(shared.RegistryCredentialsCollection), credID)
+	if err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to delete registry credential")
+		return
+	}
+	if !deleted {
+		shared.RespondError(c, http.StatusNotFound, "Registry credential not found")
 		return
 	}
 	c.Status(http.StatusNoContent)
@@ -438,6 +450,7 @@ func sanitizeScmCredential(doc bson.M) bson.M {
 		}
 		out[k] = v
 	}
+	ensureCredentialDocumentID(out)
 	return out
 }
 
@@ -452,5 +465,51 @@ func sanitizeRegistryCredential(doc bson.M) bson.M {
 		}
 		out[k] = v
 	}
+	ensureCredentialDocumentID(out)
 	return out
+}
+
+func deleteCredentialByIDOrLegacyObjectID(ctx context.Context, col *mongo.Collection, credentialID string) (bool, error) {
+	credentialID = strings.TrimSpace(credentialID)
+	if credentialID == "" {
+		return false, nil
+	}
+
+	orFilters := []bson.M{
+		{"id": credentialID},
+		{"_id": credentialID},
+	}
+	if objectID, err := primitive.ObjectIDFromHex(credentialID); err == nil {
+		orFilters = append(orFilters, bson.M{"_id": objectID})
+	}
+
+	result, err := col.DeleteOne(ctx, bson.M{"$or": orFilters})
+	if err != nil {
+		return false, err
+	}
+	return result.DeletedCount > 0, nil
+}
+
+func ensureCredentialDocumentID(doc bson.M) {
+	if doc == nil {
+		return
+	}
+	if strings.TrimSpace(shared.StringValue(doc["id"])) != "" {
+		return
+	}
+
+	switch value := doc["_id"].(type) {
+	case string:
+		doc["id"] = strings.TrimSpace(value)
+	case primitive.ObjectID:
+		doc["id"] = value.Hex()
+	case bson.M:
+		if oid, ok := value["$oid"].(string); ok {
+			doc["id"] = strings.TrimSpace(oid)
+		}
+	case map[string]interface{}:
+		if oid, ok := value["$oid"].(string); ok {
+			doc["id"] = strings.TrimSpace(oid)
+		}
+	}
 }

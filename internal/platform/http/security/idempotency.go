@@ -81,7 +81,7 @@ func RequireIdempotencyKey() gin.HandlerFunc {
 		c.Writer = recorder
 		c.Next()
 
-		status := recorder.Status()
+		status := recorder.status()
 		if status >= 500 {
 			idempotencyState.fail(fullKey, now)
 			return
@@ -89,7 +89,7 @@ func RequireIdempotencyKey() gin.HandlerFunc {
 
 		idempotencyState.complete(fullKey, now, idempotencyResponse{
 			status:      status,
-			contentType: recorder.Header().Get(httpheaders.HeaderContentType),
+			contentType: recorder.header().Get(httpheaders.HeaderContentType),
 			body:        recorder.body.Bytes(),
 		})
 	}
@@ -188,12 +188,32 @@ func (s *idempotencyStore) replay(c *gin.Context, key string, now time.Time) (bo
 
 type responseRecorder struct {
 	gin.ResponseWriter
-	body bytes.Buffer
+	body       bytes.Buffer
+	statusCode int
 }
 
 func (rw *responseRecorder) Write(data []byte) (int, error) {
+	if rw.statusCode == 0 {
+		rw.statusCode = http.StatusOK
+	}
 	if len(data) > 0 {
 		_, _ = rw.body.Write(data)
 	}
 	return rw.ResponseWriter.Write(data)
+}
+
+func (rw *responseRecorder) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+func (rw *responseRecorder) status() int {
+	if rw.statusCode == 0 {
+		return http.StatusOK
+	}
+	return rw.statusCode
+}
+
+func (rw *responseRecorder) header() http.Header {
+	return rw.ResponseWriter.Header()
 }

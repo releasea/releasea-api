@@ -13,8 +13,8 @@ func FindLatestPlatformCredential(ctx context.Context, collectionName string) (b
 	col := Collection(collectionName)
 	filter := bson.M{"scope": "platform"}
 	opts := options.FindOne().SetSort(bson.D{
-		{Key: "updatedAt", Value: -1},
-		{Key: "createdAt", Value: -1},
+		bson.E{Key: "updatedAt", Value: -1},
+		bson.E{Key: "createdAt", Value: -1},
 	})
 	var result bson.M
 	if err := col.FindOne(ctx, filter, opts).Decode(&result); err != nil {

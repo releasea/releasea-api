@@ -418,9 +418,7 @@ func isValidDomainPattern(value string) bool {
 	if domain == "" {
 		return false
 	}
-	if strings.HasPrefix(domain, "*.") {
-		domain = strings.TrimPrefix(domain, "*.")
-	}
+	domain = strings.TrimPrefix(domain, "*.")
 	if strings.Contains(domain, "/") || strings.Contains(domain, ":") {
 		return false
 	}

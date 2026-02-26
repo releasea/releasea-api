@@ -178,7 +178,7 @@ func fetchTemplateManifests(ctx context.Context, cfg *config.Config) ([]template
 		if err != nil {
 			return nil, fmt.Errorf("failed to read templates archive: %w", err)
 		}
-		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
+		if header.Typeflag != tar.TypeReg {
 			continue
 		}
 

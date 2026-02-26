@@ -24,7 +24,7 @@ import (
 	"releaseaapi/internal/platform/shared"
 
 	"go.mongodb.org/mongo-driver/bson"
-	"gopkg.in/yaml.v3"
+	yaml "gopkg.in/yaml.v3"
 )
 
 type secretProvider struct {

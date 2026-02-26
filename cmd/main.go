@@ -5,7 +5,7 @@ import (
 	"releaseaapi/internal/platform/bootstrap"
 	"releaseaapi/internal/platform/config"
 	"releaseaapi/internal/platform/http/router"
-	"releaseaapi/internal/platform/storage/mongo"
+	mongostore "releaseaapi/internal/platform/storage/mongo"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"

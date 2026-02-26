@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"releaseaapi/internal/features/operations/api"
+	operations "releaseaapi/internal/features/operations/api"
 	servicesmodels "releaseaapi/internal/features/services/models"
 	"releaseaapi/internal/platform/shared"
 

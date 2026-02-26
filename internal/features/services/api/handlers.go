@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"releaseaapi/internal/features/observability/api"
-	"releaseaapi/internal/features/operations/api"
+	observability "releaseaapi/internal/features/observability/api"
+	operations "releaseaapi/internal/features/operations/api"
 	operationqueue "releaseaapi/internal/platform/queue"
 	"releaseaapi/internal/platform/shared"
 

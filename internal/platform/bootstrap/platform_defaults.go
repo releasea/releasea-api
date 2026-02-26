@@ -8,7 +8,7 @@ import (
 
 	"releaseaapi/internal/platform/config"
 	"releaseaapi/internal/platform/shared"
-	"releaseaapi/internal/platform/storage/mongo"
+	mongostore "releaseaapi/internal/platform/storage/mongo"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"

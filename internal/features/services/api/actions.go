@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"strings"
 
-	"releaseaapi/internal/features/operations/api"
+	operations "releaseaapi/internal/features/operations/api"
 	gh "releaseaapi/internal/platform/integrations/github"
 	"releaseaapi/internal/platform/models"
 	operationqueue "releaseaapi/internal/platform/queue"

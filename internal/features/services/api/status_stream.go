@@ -384,10 +384,15 @@ func openChangeStream(ctx context.Context, collections []string) (*mongo.ChangeS
 		collValues[i] = c
 	}
 	pipeline := mongo.Pipeline{
-		bson.D{{Key: "$match", Value: bson.D{
-			{Key: "ns.coll", Value: bson.D{{Key: "$in", Value: collValues}}},
-			{Key: "operationType", Value: bson.D{{Key: "$in", Value: bson.A{"insert", "update", "replace", "delete"}}}},
-		}}},
+		bson.D{
+			bson.E{
+				Key: "$match",
+				Value: bson.D{
+					bson.E{Key: "ns.coll", Value: bson.D{bson.E{Key: "$in", Value: collValues}}},
+					bson.E{Key: "operationType", Value: bson.D{bson.E{Key: "$in", Value: bson.A{"insert", "update", "replace", "delete"}}}},
+				},
+			},
+		},
 	}
 	return mongostore.Mongo().Database(mongostore.DBName).Watch(
 		ctx,

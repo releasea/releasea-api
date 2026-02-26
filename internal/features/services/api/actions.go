@@ -424,7 +424,7 @@ func resolveServiceBuildVersion(
 func findLatestBuild(ctx context.Context, filter bson.M) (bson.M, error) {
 	var build bson.M
 	err := shared.Collection(shared.BuildsCollection).
-		FindOne(ctx, filter, options.FindOne().SetSort(bson.D{{Key: "createdAt", Value: -1}})).
+		FindOne(ctx, filter, options.FindOne().SetSort(bson.D{bson.E{Key: "createdAt", Value: -1}})).
 		Decode(&build)
 	return build, err
 }

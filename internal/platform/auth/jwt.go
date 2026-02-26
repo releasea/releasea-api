@@ -472,10 +472,7 @@ func loadWorkerRegistration(registrationID string) (bson.M, error) {
 
 func isRegistrationActive(registration bson.M) bool {
 	status := strings.ToLower(shared.StringValue(registration["status"]))
-	if status == "revoked" {
-		return false
-	}
-	return true
+	return status != "revoked"
 }
 
 func validateWorkerToken(token string) (bson.M, error) {

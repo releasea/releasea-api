@@ -94,7 +94,7 @@ func queueRuleDelete(ctx context.Context, rule bson.M, service bson.M, triggered
 		"logs":        []interface{}{},
 	}
 	if err := shared.InsertOne(ctx, shared.Collection(shared.RuleDeploysCollection), ruleDeployDoc); err != nil {
-		return fmt.Errorf("Failed to queue rule delete")
+		return fmt.Errorf("failed to queue rule delete")
 	}
 
 	opID := "op-" + uuid.NewString()
@@ -119,7 +119,7 @@ func queueRuleDelete(ctx context.Context, rule bson.M, service bson.M, triggered
 		"serviceName": serviceName,
 	}
 	if err := shared.InsertOne(ctx, shared.Collection(shared.OperationsCollection), opDoc); err != nil {
-		return fmt.Errorf("Failed to queue rule delete")
+		return fmt.Errorf("failed to queue rule delete")
 	}
 	_ = shared.UpdateByID(ctx, shared.Collection(shared.RulesCollection), ruleID, bson.M{
 		"status":    operations.StatusQueued,
@@ -164,7 +164,7 @@ func queueServiceDelete(ctx context.Context, service bson.M, environment, trigge
 		"serviceName": serviceName,
 	}
 	if err := shared.InsertOne(ctx, shared.Collection(shared.OperationsCollection), opDoc); err != nil {
-		return fmt.Errorf("Failed to queue service delete")
+		return fmt.Errorf("failed to queue service delete")
 	}
 	operationqueue.PublishOperationWithDispatchError(ctx, opID)
 	return nil

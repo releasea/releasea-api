@@ -328,16 +328,16 @@ func resolveSSORedirectURL(c *gin.Context) (string, error) {
 	}
 	parsed, err := url.Parse(redirect)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return "", fmt.Errorf("Invalid redirect URL")
+		return "", fmt.Errorf("invalid redirect URL")
 	}
 	if parsed.Scheme != "https" && parsed.Scheme != "http" {
-		return "", fmt.Errorf("Invalid redirect URL protocol")
+		return "", fmt.Errorf("invalid redirect URL protocol")
 	}
 	if !strings.HasPrefix(parsed.Path, "/auth") {
-		return "", fmt.Errorf("Redirect path must start with /auth")
+		return "", fmt.Errorf("redirect path must start with /auth")
 	}
 	if !isAllowedRedirectOrigin(c, parsed) {
-		return "", fmt.Errorf("Redirect URL is not allowed")
+		return "", fmt.Errorf("redirect URL is not allowed")
 	}
 	return parsed.String(), nil
 }

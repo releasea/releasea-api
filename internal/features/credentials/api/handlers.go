@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
@@ -325,8 +326,16 @@ func WorkerCredentials(c *gin.Context) {
 		}
 	}
 
-	scmCred, _ := resolveScmCredential(ctx, serviceModel, projectModel)
-	regCred, _ := resolveRegistryCredential(ctx, serviceModel, projectModel)
+	scmCred, scmErr := resolveScmCredential(ctx, serviceModel, projectModel)
+	if scmErr != nil {
+		log.Printf("[worker-credentials] service=%s failed to resolve scm credential: %v", serviceModel.ID, scmErr)
+		scmCred = bson.M{}
+	}
+	regCred, regErr := resolveRegistryCredential(ctx, serviceModel, projectModel)
+	if regErr != nil {
+		log.Printf("[worker-credentials] service=%s failed to resolve registry credential: %v", serviceModel.ID, regErr)
+		regCred = bson.M{}
+	}
 	template, _ := deploys.ResolveDeployTemplate(ctx, service)
 	secretProvider, _ := deploys.ResolveSecretProvider(ctx, service)
 
@@ -343,26 +352,62 @@ func WorkerCredentials(c *gin.Context) {
 
 func resolveScmCredential(ctx context.Context, service platformmodels.Service, project *platformmodels.Project) (bson.M, error) {
 	if id := strings.TrimSpace(service.SCMCredentialID); id != "" {
-		return shared.FindOne(ctx, shared.Collection(shared.ScmCredentialsCollection), bson.M{"id": id})
+		cred, found, err := resolveCredentialByIDOrLegacyObjectID(ctx, shared.ScmCredentialsCollection, id)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			return cred, nil
+		}
+		log.Printf("[worker-credentials] service=%s missing scm credential id=%s; falling back", service.ID, id)
 	}
 	if project != nil {
 		if id := strings.TrimSpace(project.SCMCredentialID); id != "" {
-			return shared.FindOne(ctx, shared.Collection(shared.ScmCredentialsCollection), bson.M{"id": id})
+			cred, found, err := resolveCredentialByIDOrLegacyObjectID(ctx, shared.ScmCredentialsCollection, id)
+			if err != nil {
+				return nil, err
+			}
+			if found {
+				return cred, nil
+			}
+			log.Printf("[worker-credentials] project=%s missing scm credential id=%s; falling back", project.ID, id)
 		}
 	}
-	return shared.FindLatestPlatformCredential(ctx, shared.ScmCredentialsCollection)
+	cred, err := shared.FindLatestPlatformCredential(ctx, shared.ScmCredentialsCollection)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return bson.M{}, nil
+	}
+	return cred, err
 }
 
 func resolveRegistryCredential(ctx context.Context, service platformmodels.Service, project *platformmodels.Project) (bson.M, error) {
 	if id := strings.TrimSpace(service.RegistryCredentialID); id != "" {
-		return shared.FindOne(ctx, shared.Collection(shared.RegistryCredentialsCollection), bson.M{"id": id})
+		cred, found, err := resolveCredentialByIDOrLegacyObjectID(ctx, shared.RegistryCredentialsCollection, id)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			return cred, nil
+		}
+		log.Printf("[worker-credentials] service=%s missing registry credential id=%s; falling back", service.ID, id)
 	}
 	if project != nil {
 		if id := strings.TrimSpace(project.RegistryCredentialID); id != "" {
-			return shared.FindOne(ctx, shared.Collection(shared.RegistryCredentialsCollection), bson.M{"id": id})
+			cred, found, err := resolveCredentialByIDOrLegacyObjectID(ctx, shared.RegistryCredentialsCollection, id)
+			if err != nil {
+				return nil, err
+			}
+			if found {
+				return cred, nil
+			}
+			log.Printf("[worker-credentials] project=%s missing registry credential id=%s; falling back", project.ID, id)
 		}
 	}
-	return shared.FindLatestPlatformCredential(ctx, shared.RegistryCredentialsCollection)
+	cred, err := shared.FindLatestPlatformCredential(ctx, shared.RegistryCredentialsCollection)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return bson.M{}, nil
+	}
+	return cred, err
 }
 
 func buildCredentialFilter(c *gin.Context) bson.M {
@@ -512,4 +557,28 @@ func ensureCredentialDocumentID(doc bson.M) {
 			doc["id"] = strings.TrimSpace(oid)
 		}
 	}
+}
+
+func resolveCredentialByIDOrLegacyObjectID(ctx context.Context, collectionName, credentialID string) (bson.M, bool, error) {
+	credentialID = strings.TrimSpace(credentialID)
+	if credentialID == "" {
+		return nil, false, nil
+	}
+
+	orFilters := []bson.M{
+		{"id": credentialID},
+		{"_id": credentialID},
+	}
+	if objectID, err := primitive.ObjectIDFromHex(credentialID); err == nil {
+		orFilters = append(orFilters, bson.M{"_id": objectID})
+	}
+
+	doc, err := shared.FindOne(ctx, shared.Collection(collectionName), bson.M{"$or": orFilters})
+	if err == nil {
+		return doc, true, nil
+	}
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, false, nil
+	}
+	return nil, false, err
 }

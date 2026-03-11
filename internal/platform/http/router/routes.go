@@ -142,12 +142,14 @@ func registerWorkerRoutes(rg *gin.RouterGroup) {
 	rg.POST("/workers/credentials", credentials.WorkerCredentials)
 	rg.POST("/workers/services/:id/runtime", services.UpdateServiceRuntime)
 	rg.POST("/workers/services/:id/blue-green/primary", services.UpdateBlueGreenPrimary)
+	rg.GET("/workers/bootstrap-profile", workers.GetWorkerBootstrapProfile)
 	rg.GET("/workers", workers.GetWorkers)
 	rg.PUT("/workers/:id", workers.UpdateWorker)
 	rg.DELETE("/workers/:id", workers.DeleteWorker)
 	rg.POST("/workers/:id/restart", workers.RestartWorker)
 	rg.GET("/workers/registrations", workers.GetWorkerRegistrations)
 	rg.POST("/workers/registrations", workers.CreateWorkerRegistration)
+	rg.DELETE("/workers/registrations/:id", workers.DeleteWorkerRegistration)
 	rg.POST("/workers/builds", workers.RegisterBuild)
 }
 

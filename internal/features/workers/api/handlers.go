@@ -64,6 +64,22 @@ func GetWorkers(c *gin.Context) {
 	c.JSON(http.StatusOK, summarizeWorkers(items))
 }
 
+func GetWorkerBootstrapProfile(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	defer cancel()
+
+	profile, err := shared.FindOne(
+		ctx,
+		shared.Collection(shared.WorkerBootstrapProfilesCollection),
+		bson.M{"_id": shared.WorkerBootstrapProfileID},
+	)
+	if err != nil {
+		c.JSON(http.StatusOK, shared.WorkerBootstrapProfileDocument(shared.NowISO()))
+		return
+	}
+	c.JSON(http.StatusOK, profile)
+}
+
 func UpdateWorker(c *gin.Context) {
 	workerID := c.Param("id")
 	var payload bson.M
@@ -85,11 +101,34 @@ func UpdateWorker(c *gin.Context) {
 
 func DeleteWorker(c *gin.Context) {
 	workerID := c.Param("id")
+	if strings.TrimSpace(workerID) == "" {
+		shared.RespondError(c, http.StatusBadRequest, "Worker ID required")
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
-	if err := shared.DeleteByID(ctx, shared.Collection(shared.WorkersCollection), workerID); err != nil {
+	worker, err := shared.FindOne(ctx, shared.Collection(shared.WorkersCollection), bson.M{"id": workerID})
+	if err != nil {
+		worker, _ = shared.FindOne(ctx, shared.Collection(shared.WorkersCollection), bson.M{"_id": workerID})
+	}
+	credentialIDs := collectWorkerCredentialIDs(worker)
+
+	deleteFilters := []bson.M{
+		{"id": workerID},
+		{"_id": workerID},
+	}
+	if len(credentialIDs) > 0 {
+		deleteFilters = append(deleteFilters, bson.M{"credentialId": bson.M{"$in": credentialIDs}})
+	}
+	if _, err := shared.Collection(shared.WorkersCollection).DeleteMany(ctx, bson.M{"$or": deleteFilters}); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to delete worker")
 		return
+	}
+	if len(credentialIDs) > 0 {
+		if err := revokeWorkerRegistrations(ctx, credentialIDs, shared.NowISO()); err != nil {
+			shared.RespondError(c, http.StatusInternalServerError, "Failed to revoke worker token")
+			return
+		}
 	}
 	c.Status(http.StatusNoContent)
 }
@@ -310,20 +349,63 @@ func CreateWorkerRegistration(c *gin.Context) {
 	c.JSON(http.StatusOK, payload)
 }
 
+func DeleteWorkerRegistration(c *gin.Context) {
+	registrationID := strings.TrimSpace(c.Param("id"))
+	if registrationID == "" {
+		shared.RespondError(c, http.StatusBadRequest, "Worker registration ID required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	defer cancel()
+	now := shared.NowISO()
+
+	result, err := shared.Collection(shared.WorkerRegistrationsCollection).UpdateOne(
+		ctx,
+		bson.M{
+			"$or": []bson.M{
+				{"id": registrationID},
+				{"_id": registrationID},
+			},
+		},
+		bson.M{
+			"$set": bson.M{
+				"status":    "revoked",
+				"revokedAt": now,
+				"updatedAt": now,
+			},
+		},
+	)
+	if err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to revoke worker registration")
+		return
+	}
+	if result.MatchedCount == 0 {
+		shared.RespondError(c, http.StatusNotFound, "Worker registration not found")
+		return
+	}
+
+	_, _ = shared.Collection(shared.WorkersCollection).DeleteMany(ctx, bson.M{
+		"credentialId": registrationID,
+	})
+	c.Status(http.StatusNoContent)
+}
+
 func Heartbeat(c *gin.Context) {
 	var payload struct {
-		ID                  string   `json:"id"`
-		Name                string   `json:"name"`
-		Environment         string   `json:"environment"`
-		Namespace           string   `json:"namespace"`
-		NamespacePrefix     string   `json:"namespacePrefix"`
-		Cluster             string   `json:"cluster"`
-		Version             string   `json:"version"`
-		Status              string   `json:"status"`
-		Tags                []string `json:"tags"`
-		DesiredAgents       int      `json:"desiredAgents"`
-		DeploymentName      string   `json:"deploymentName"`
-		DeploymentNamespace string   `json:"deploymentNamespace"`
+		ID                      string   `json:"id"`
+		Name                    string   `json:"name"`
+		Environment             string   `json:"environment"`
+		Namespace               string   `json:"namespace"`
+		NamespacePrefix         string   `json:"namespacePrefix"`
+		Cluster                 string   `json:"cluster"`
+		Version                 string   `json:"version"`
+		BootstrapProfileVersion string   `json:"bootstrapProfileVersion"`
+		Status                  string   `json:"status"`
+		Tags                    []string `json:"tags"`
+		DesiredAgents           int      `json:"desiredAgents"`
+		DeploymentName          string   `json:"deploymentName"`
+		DeploymentNamespace     string   `json:"deploymentNamespace"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
@@ -377,18 +459,19 @@ func Heartbeat(c *gin.Context) {
 	defer cancel()
 
 	workerDoc := bson.M{
-		"_id":             payload.ID,
-		"id":              payload.ID,
-		"name":            payload.Name,
-		"environment":     payload.Environment,
-		"namespace":       payload.Namespace,
-		"namespacePrefix": payload.NamespacePrefix,
-		"cluster":         payload.Cluster,
-		"version":         payload.Version,
-		"status":          payload.Status,
-		"tags":            payload.Tags,
-		"lastHeartbeat":   now,
-		"updatedAt":       now,
+		"_id":                     payload.ID,
+		"id":                      payload.ID,
+		"name":                    payload.Name,
+		"environment":             payload.Environment,
+		"namespace":               payload.Namespace,
+		"namespacePrefix":         payload.NamespacePrefix,
+		"cluster":                 payload.Cluster,
+		"version":                 payload.Version,
+		"bootstrapProfileVersion": payload.BootstrapProfileVersion,
+		"status":                  payload.Status,
+		"tags":                    payload.Tags,
+		"lastHeartbeat":           now,
+		"updatedAt":               now,
 	}
 	if payload.DeploymentName != "" {
 		workerDoc["deploymentName"] = payload.DeploymentName
@@ -495,22 +578,23 @@ func summarizeWorkers(items []bson.M) []bson.M {
 				name = shared.StringValue(item["id"])
 			}
 			group = bson.M{
-				"id":              key,
-				"primaryId":       shared.StringValue(item["id"]),
-				"name":            name,
-				"environment":     shared.StringValue(item["environment"]),
-				"namespace":       shared.StringValue(item["namespace"]),
-				"namespacePrefix": shared.StringValue(item["namespacePrefix"]),
-				"cluster":         shared.StringValue(item["cluster"]),
-				"version":         shared.StringValue(item["version"]),
-				"status":          "offline",
-				"tags":            shared.ToStringSlice(item["tags"]),
-				"lastHeartbeat":   shared.StringValue(item["lastHeartbeat"]),
-				"tasksCompleted":  0,
-				"registeredAt":    shared.StringValue(item["registeredAt"]),
-				"desiredAgents":   0,
-				"onlineAgents":    0,
-				"credentialId":    "",
+				"id":                      key,
+				"primaryId":               shared.StringValue(item["id"]),
+				"name":                    name,
+				"environment":             shared.StringValue(item["environment"]),
+				"namespace":               shared.StringValue(item["namespace"]),
+				"namespacePrefix":         shared.StringValue(item["namespacePrefix"]),
+				"cluster":                 shared.StringValue(item["cluster"]),
+				"version":                 shared.StringValue(item["version"]),
+				"bootstrapProfileVersion": shared.StringValue(item["bootstrapProfileVersion"]),
+				"status":                  "offline",
+				"tags":                    shared.ToStringSlice(item["tags"]),
+				"lastHeartbeat":           shared.StringValue(item["lastHeartbeat"]),
+				"tasksCompleted":          0,
+				"registeredAt":            shared.StringValue(item["registeredAt"]),
+				"desiredAgents":           0,
+				"onlineAgents":            0,
+				"credentialId":            "",
 			}
 			groups[key] = group
 		}
@@ -564,6 +648,7 @@ func summarizeWorkers(items []bson.M) []bson.M {
 					group["primaryId"] = agentID
 					group["name"] = shared.StringValue(item["name"])
 					group["version"] = shared.StringValue(item["version"])
+					group["bootstrapProfileVersion"] = shared.StringValue(item["bootstrapProfileVersion"])
 					group["tags"] = shared.ToStringSlice(item["tags"])
 					if credentialID != "" {
 						group["credentialId"] = credentialID
@@ -645,6 +730,41 @@ func workerGroupKey(item bson.M) string {
 	environment := shared.StringValue(item["environment"])
 	cluster := shared.StringValue(item["cluster"])
 	return strings.Join([]string{name, environment, cluster}, "|")
+}
+
+func collectWorkerCredentialIDs(worker bson.M) []string {
+	if worker == nil {
+		return nil
+	}
+	credentialIDs := make([]string, 0, 2)
+	if credentialID := shared.StringValue(worker["credentialId"]); credentialID != "" {
+		credentialIDs = append(credentialIDs, credentialID)
+	}
+	credentialIDs = append(credentialIDs, shared.ToStringSlice(worker["credentialIds"])...)
+	return shared.UniqueStrings(credentialIDs)
+}
+
+func revokeWorkerRegistrations(ctx context.Context, registrationIDs []string, now string) error {
+	if len(registrationIDs) == 0 {
+		return nil
+	}
+	_, err := shared.Collection(shared.WorkerRegistrationsCollection).UpdateMany(
+		ctx,
+		bson.M{
+			"$or": []bson.M{
+				{"id": bson.M{"$in": registrationIDs}},
+				{"_id": bson.M{"$in": registrationIDs}},
+			},
+		},
+		bson.M{
+			"$set": bson.M{
+				"status":    "revoked",
+				"revokedAt": now,
+				"updatedAt": now,
+			},
+		},
+	)
+	return err
 }
 
 func RegisterBuild(c *gin.Context) {

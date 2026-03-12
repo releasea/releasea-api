@@ -65,19 +65,9 @@ func GetWorkers(c *gin.Context) {
 }
 
 func GetWorkerBootstrapProfile(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
-	defer cancel()
-
-	profile, err := shared.FindOne(
-		ctx,
-		shared.Collection(shared.WorkerBootstrapProfilesCollection),
-		bson.M{"_id": shared.WorkerBootstrapProfileID},
-	)
-	if err != nil {
-		c.JSON(http.StatusOK, shared.WorkerBootstrapProfileDocument(shared.NowISO()))
-		return
-	}
-	c.JSON(http.StatusOK, profile)
+	// Return the effective runtime profile derived from process env to avoid
+	// drift between persisted defaults and the live platform bootstrap config.
+	c.JSON(http.StatusOK, shared.WorkerBootstrapProfileDocument(shared.NowISO()))
 }
 
 func UpdateWorker(c *gin.Context) {
@@ -125,8 +115,8 @@ func DeleteWorker(c *gin.Context) {
 		return
 	}
 	if len(credentialIDs) > 0 {
-		if err := revokeWorkerRegistrations(ctx, credentialIDs, shared.NowISO()); err != nil {
-			shared.RespondError(c, http.StatusInternalServerError, "Failed to revoke worker token")
+		if err := deleteWorkerRegistrations(ctx, credentialIDs); err != nil {
+			shared.RespondError(c, http.StatusInternalServerError, "Failed to delete worker registration")
 			return
 		}
 	}
@@ -286,7 +276,9 @@ func markRegistrationInactive(ctx context.Context, worker bson.M, now time.Time)
 func GetWorkerRegistrations(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
-	items, err := shared.FindAll(ctx, shared.Collection(shared.WorkerRegistrationsCollection), bson.M{})
+	items, err := shared.FindAll(ctx, shared.Collection(shared.WorkerRegistrationsCollection), bson.M{
+		"status": bson.M{"$ne": "revoked"},
+	})
 	if err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to load worker registrations")
 		return
@@ -358,9 +350,8 @@ func DeleteWorkerRegistration(c *gin.Context) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
-	now := shared.NowISO()
 
-	result, err := shared.Collection(shared.WorkerRegistrationsCollection).UpdateOne(
+	result, err := shared.Collection(shared.WorkerRegistrationsCollection).DeleteOne(
 		ctx,
 		bson.M{
 			"$or": []bson.M{
@@ -368,25 +359,21 @@ func DeleteWorkerRegistration(c *gin.Context) {
 				{"_id": registrationID},
 			},
 		},
-		bson.M{
-			"$set": bson.M{
-				"status":    "revoked",
-				"revokedAt": now,
-				"updatedAt": now,
-			},
-		},
 	)
 	if err != nil {
-		shared.RespondError(c, http.StatusInternalServerError, "Failed to revoke worker registration")
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to delete worker registration")
 		return
 	}
-	if result.MatchedCount == 0 {
+	if result.DeletedCount == 0 {
 		shared.RespondError(c, http.StatusNotFound, "Worker registration not found")
 		return
 	}
 
 	_, _ = shared.Collection(shared.WorkersCollection).DeleteMany(ctx, bson.M{
-		"credentialId": registrationID,
+		"$or": []bson.M{
+			{"credentialId": registrationID},
+			{"credentialIds": registrationID},
+		},
 	})
 	c.Status(http.StatusNoContent)
 }
@@ -744,23 +731,16 @@ func collectWorkerCredentialIDs(worker bson.M) []string {
 	return shared.UniqueStrings(credentialIDs)
 }
 
-func revokeWorkerRegistrations(ctx context.Context, registrationIDs []string, now string) error {
+func deleteWorkerRegistrations(ctx context.Context, registrationIDs []string) error {
 	if len(registrationIDs) == 0 {
 		return nil
 	}
-	_, err := shared.Collection(shared.WorkerRegistrationsCollection).UpdateMany(
+	_, err := shared.Collection(shared.WorkerRegistrationsCollection).DeleteMany(
 		ctx,
 		bson.M{
 			"$or": []bson.M{
 				{"id": bson.M{"$in": registrationIDs}},
 				{"_id": bson.M{"$in": registrationIDs}},
-			},
-		},
-		bson.M{
-			"$set": bson.M{
-				"status":    "revoked",
-				"revokedAt": now,
-				"updatedAt": now,
 			},
 		},
 	)

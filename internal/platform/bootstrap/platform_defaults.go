@@ -63,7 +63,7 @@ func ensurePlatformDefaults(cfg *config.Config) error {
 		"organization": bson.M{
 			"name":   "Releasea",
 			"slug":   "releasea",
-			"apiUrl": "https://api.releasea.dev",
+			"apiUrl": "https://api.releasea.io",
 		},
 		"database": bson.M{
 			"mongoUri":  "",
@@ -113,10 +113,6 @@ func ensurePlatformDefaults(cfg *config.Config) error {
 		"createdAt": now,
 		"updatedAt": now,
 	}); err != nil {
-		return err
-	}
-
-	if err := upsertWorkerBootstrapProfile(ctx, db.Collection(shared.WorkerBootstrapProfilesCollection), now); err != nil {
 		return err
 	}
 
@@ -225,34 +221,6 @@ func insertIfMissing(ctx context.Context, collection *mongo.Collection, id strin
 		ctx,
 		bson.M{"_id": id},
 		bson.M{"$setOnInsert": doc},
-		options.Update().SetUpsert(true),
-	)
-	return err
-}
-
-func upsertWorkerBootstrapProfile(ctx context.Context, collection *mongo.Collection, now string) error {
-	doc := shared.WorkerBootstrapProfileDocument(now)
-	id := shared.StringValue(doc["id"])
-	if id == "" {
-		id = shared.WorkerBootstrapProfileID
-	}
-	setDoc := bson.M{}
-	for key, value := range doc {
-		if key == "_id" {
-			continue
-		}
-		setDoc[key] = value
-	}
-	_, err := collection.UpdateOne(
-		ctx,
-		bson.M{"_id": id},
-		bson.M{
-			"$set": setDoc,
-			"$setOnInsert": bson.M{
-				"_id":       id,
-				"createdAt": now,
-			},
-		},
 		options.Update().SetUpsert(true),
 	)
 	return err

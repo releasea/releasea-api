@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 	"releaseaapi/internal/platform/bootstrap"
 	"releaseaapi/internal/platform/config"
 	"releaseaapi/internal/platform/http/router"
@@ -11,8 +12,28 @@ import (
 	"github.com/joho/godotenv"
 )
 
+func loadEnvFiles() {
+	files := []string{".env", ".env.local", ".env.local.cluster"}
+	merged := map[string]string{}
+	for _, file := range files {
+		values, err := godotenv.Read(file)
+		if err != nil {
+			continue
+		}
+		for key, value := range values {
+			merged[key] = value
+		}
+	}
+	for key, value := range merged {
+		if _, exists := os.LookupEnv(key); exists {
+			continue
+		}
+		_ = os.Setenv(key, value)
+	}
+}
+
 func main() {
-	_ = godotenv.Load()
+	loadEnvFiles()
 	cfg := config.LoadConfig()
 
 	// Initialize Mongo (fatal if it fails)

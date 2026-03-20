@@ -206,6 +206,10 @@ func ensurePlatformDefaults(cfg *config.Config) error {
 		}
 	}
 
+	if err := ensureBootstrapDevWorkerRegistration(); err != nil {
+		return err
+	}
+
 	return nil
 }
 

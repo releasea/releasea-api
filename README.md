@@ -6,6 +6,15 @@ REST API server for the Releasea platform (Go + Gin + MongoDB).
 
 The API is the control plane for services, deploy operations, workers, governance, identity, and real-time status streaming.
 
+> This README is primarily for component-level local development and contribution work. For end-user platform installation, start with the public documentation linked below.
+
+## Documentation
+
+- Installation guide: [docs.releasea.io/?doc=installation](https://docs.releasea.io/?doc=installation)
+- Installation modes: [docs.releasea.io/?doc=installation-modes](https://docs.releasea.io/?doc=installation-modes)
+- Environments and workers: [docs.releasea.io/?doc=environments-and-workers](https://docs.releasea.io/?doc=environments-and-workers)
+- Public components: [docs.releasea.io/?doc=public-components](https://docs.releasea.io/?doc=public-components)
+
 ## Running Locally
 
 ```bash
@@ -58,26 +67,26 @@ Common targets:
 | `INSTALL_TEMPLATES` | Enables template installation from the templates repository | `true` |
 | `TEMPLATE_REPO_OWNER` | Templates repository owner | `releasea` |
 | `TEMPLATE_REPO_NAME` | Templates repository name | `templates` |
-| `TEMPLATE_REPO_REF` | Branch/tag used to fetch templates | `main` |
+| `TEMPLATE_REPO_REF` | Branch or tag used to fetch templates | `main` |
 
 Behavior summary:
 
 - First run on an empty database: the API bootstraps base data automatically.
 - Subsequent restarts: no reset is performed by default.
-- Forced reset/restore: set `RELEASEA_RESET=true` deliberately.
+- Forced reset or restore: set `RELEASEA_RESET=true` deliberately.
 
 ### Bootstrap Identity
 
 | Variable | Description | Default |
 |---|---|---|
-| `DEFAULT_TEAM_ID` | Default team ID created/ensured at startup | `team-1` |
+| `DEFAULT_TEAM_ID` | Default team ID created or ensured at startup | `team-1` |
 | `DEFAULT_TEAM_NAME` | Default team display name | `Platform` |
 | `DEFAULT_ADMIN_ID` | Default admin user ID | `user-1` |
 | `DEFAULT_ADMIN_NAME` | Default admin display name | `Platform Admin` |
 | `DEFAULT_ADMIN_EMAIL` | Default admin email | `admin@releasea.io` |
 | `DEFAULT_ADMIN_PASSWORD` | Default admin password | `releasea` |
 | `ALLOW_USER_SIGNUP` | Enables public sign-up endpoint | `false` |
-| `KEEP_ADDITIONAL_USERS` | Keeps extra users/profiles during bootstrap identity reconciliation | `false` |
+| `KEEP_ADDITIONAL_USERS` | Keeps extra users and profiles during bootstrap identity reconciliation | `false` |
 
 ### Queue and Worker Validation
 
@@ -85,7 +94,7 @@ Behavior summary:
 |---|---|---|
 | `RABBITMQ_URL` | RabbitMQ AMQP URL | `amqp://releasea:releasea@localhost:5672/` |
 | `WORKER_QUEUE` | Queue name consumed by workers | `releasea.worker` |
-| `WORKER_STALE_SECONDS` | Worker stale timeout used for environment-availability checks on deploy/start/stop/restart/rule publish | `90` |
+| `WORKER_STALE_SECONDS` | Worker stale timeout used for environment-availability checks | `90` |
 
 ### Observability and Runtime Status
 
@@ -101,7 +110,7 @@ Behavior summary:
 |---|---|---|
 | `RELEASEA_SYSTEM_NAMESPACE` | Namespace where platform shared workloads run | `releasea-system` |
 | `RELEASEA_STATIC_NGINX_WORKLOAD` | Static workload used for aggregate static metrics | `releasea-static-nginx` |
-| `RELEASEA_STATIC_METRICS_SCOPE` | Static metrics mode (`aggregate` or service-scoped) | `aggregate` |
+| `RELEASEA_STATIC_METRICS_SCOPE` | Static metrics mode (`aggregate` or `service-scoped`) | `aggregate` |
 | `RELEASEA_INTERNAL_DOMAIN` | Internal base domain for generated hosts | `releasea.internal` |
 | `RELEASEA_EXTERNAL_DOMAIN` | External base domain for generated hosts | `releasea.external` |
 | `RELEASEA_INTERNAL_GATEWAY` | Istio internal gateway reference | `istio-system/releasea-internal-gateway` |

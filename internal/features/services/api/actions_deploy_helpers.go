@@ -93,6 +93,13 @@ func resolveServiceDeployContextOrRespond(
 		})
 		return "", "", false, false
 	}
+	if isObservedService(service) {
+		c.JSON(http.StatusConflict, gin.H{
+			"message": "Observed services cannot be deployed by Releasea. Switch the service to managed mode first.",
+			"code":    "SERVICE_OBSERVED_MODE",
+		})
+		return "", "", false, false
+	}
 
 	sourceType := normalizeServiceSourceType(shared.StringValue(service["sourceType"]))
 	if sourceType == "" {

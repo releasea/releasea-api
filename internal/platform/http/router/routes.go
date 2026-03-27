@@ -144,6 +144,7 @@ func registerWorkerRoutes(rg *gin.RouterGroup) {
 	rg.POST("/workers/services/:id/blue-green/primary", services.UpdateBlueGreenPrimary)
 	rg.GET("/workers/bootstrap-profile", workers.GetWorkerBootstrapProfile)
 	rg.GET("/workers", workers.GetWorkers)
+	rg.GET("/workers/discovered-workloads", workers.GetDiscoveredWorkloads)
 	rg.PUT("/workers/:id", workers.UpdateWorker)
 	rg.DELETE("/workers/:id", workers.DeleteWorker)
 	rg.POST("/workers/:id/restart", workers.RestartWorker)
@@ -225,7 +226,7 @@ func registerCredentialsRoutes(rg *gin.RouterGroup) {
 func registerScmRoutes(rg *gin.RouterGroup) {
 	rg.POST("/scm/github/template-repos", scm.CreateTemplateRepo)
 	rg.GET("/scm/github/template-repos/availability", scm.CheckTemplateRepoAvailability)
-	rg.GET("/scm/github/commits", scm.ListCommits)
+	rg.GET("/scm/commits", scm.ListCommits)
 }
 
 func registerEnvironmentRoutes(rg *gin.RouterGroup) {
@@ -268,6 +269,9 @@ func registerProfileRoutes(rg *gin.RouterGroup) {
 }
 
 func registerSettingsRoutes(rg *gin.RouterGroup) {
+	rg.GET("/settings/providers/catalog", settings.GetProviderCatalog)
+	rg.GET("/settings/providers/status", settings.GetProviderStatus)
+	rg.GET("/settings/providers/health", settings.GetProviderHealth)
 	rg.GET("/settings/platform", settings.GetPlatformSettings)
 	rg.PUT("/settings/platform", settings.UpdatePlatformSettings)
 	rg.GET("/runtime-profiles", settings.GetRuntimeProfiles)

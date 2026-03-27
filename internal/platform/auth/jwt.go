@@ -420,7 +420,7 @@ func workerJWTAllowed(method, path string) bool {
 		if strings.Contains(path, "/services/") || strings.HasSuffix(path, "/services") {
 			return true
 		}
-		if strings.Contains(path, "/scm/github/commits") {
+		if strings.Contains(path, "/scm/commits") {
 			return true
 		}
 		if strings.Contains(path, "/rules/") {

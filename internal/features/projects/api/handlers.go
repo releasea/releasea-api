@@ -135,7 +135,7 @@ func DeleteProject(c *gin.Context) {
 	}
 
 	if len(services) > 0 {
-		if err := cleanupManagedGithubRepos(ctx, projectID, project, services); err != nil {
+		if err := cleanupManagedScmRepos(ctx, projectID, project, services); err != nil {
 			shared.RespondError(c, http.StatusBadGateway, err.Error())
 			return
 		}

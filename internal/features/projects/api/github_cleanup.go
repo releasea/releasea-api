@@ -5,15 +5,16 @@ import (
 	"fmt"
 	"strings"
 
-	gh "releaseaapi/internal/platform/integrations/github"
+	scmproviders "releaseaapi/internal/platform/providers/scm"
 	"releaseaapi/internal/platform/shared"
 
 	"go.mongodb.org/mongo-driver/bson"
 )
 
-func cleanupManagedGithubRepos(ctx context.Context, projectID string, project bson.M, services []bson.M) error {
-	repos := make(map[string]gh.RepoRef)
+func cleanupManagedScmRepos(ctx context.Context, projectID string, project bson.M, services []bson.M) error {
+	repos := make(map[string]string)
 	tokens := make(map[string]string)
+	runtimes := make(map[string]scmproviders.Runtime)
 
 	for _, service := range services {
 		repoURL := strings.TrimSpace(shared.StringValue(service["repoUrl"]))
@@ -24,28 +25,26 @@ func cleanupManagedGithubRepos(ctx context.Context, projectID string, project bs
 		if sourceType == "registry" || sourceType == "docker" {
 			continue
 		}
-		repo, ok := gh.ParseRepo(repoURL)
-		if !ok {
-			continue
-		}
-		key := fmt.Sprintf("%s/%s", repo.Owner, repo.Name)
+		key := repoURL
 		if _, exists := repos[key]; exists {
 			continue
 		}
-		token, err := resolveServiceScmToken(ctx, service, project, key)
+		runtime, token, err := resolveServiceScmRuntimeToken(ctx, service, project, key)
 		if err != nil {
 			return err
 		}
 		if token == "" {
 			return fmt.Errorf("SCM credential missing token for repository %s", key)
 		}
-		repos[key] = repo
+		repos[key] = repoURL
 		tokens[key] = token
+		runtimes[key] = runtime
 	}
 
-	for key, repo := range repos {
+	for key, repoURL := range repos {
 		token := tokens[key]
-		_, err := gh.DeleteManagedRepo(ctx, token, repo, projectID, false)
+		runtime := runtimes[key]
+		_, err := runtime.DeleteManagedRepo(ctx, token, repoURL, projectID, false)
 		if err != nil {
 			return err
 		}
@@ -54,19 +53,20 @@ func cleanupManagedGithubRepos(ctx context.Context, projectID string, project bs
 	return nil
 }
 
-func resolveServiceScmToken(ctx context.Context, service bson.M, project bson.M, repoKey string) (string, error) {
+func resolveServiceScmRuntimeToken(ctx context.Context, service bson.M, project bson.M, repoKey string) (scmproviders.Runtime, string, error) {
 	cred, err := resolveServiceScmCredential(ctx, service, project)
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	if cred == nil {
-		return "", fmt.Errorf("SCM credential not found for repository %s", repoKey)
+		return nil, "", fmt.Errorf("SCM credential not found for repository %s", repoKey)
 	}
 	provider := strings.ToLower(shared.StringValue(cred["provider"]))
-	if provider != "" && provider != "github" {
-		return "", fmt.Errorf("SCM credential must be GitHub to delete repository %s", repoKey)
+	runtime, err := scmproviders.ResolveRuntimeForCapability(provider, scmproviders.CapabilityManagedDelete)
+	if err != nil {
+		return nil, "", fmt.Errorf("SCM credential provider %q cannot delete managed repository %s: %w", strings.TrimSpace(provider), repoKey, err)
 	}
-	return strings.TrimSpace(shared.StringValue(cred["token"])), nil
+	return runtime, strings.TrimSpace(shared.StringValue(cred["token"])), nil
 }
 
 func resolveServiceScmCredential(ctx context.Context, service bson.M, project bson.M) (bson.M, error) {

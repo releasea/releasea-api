@@ -160,6 +160,37 @@ func TestIsRegistrySourceType(t *testing.T) {
 	}
 }
 
+func TestNormalizeServiceManagementMode(t *testing.T) {
+	tests := []struct {
+		input  string
+		expect string
+	}{
+		{input: "", expect: "managed"},
+		{input: "managed", expect: "managed"},
+		{input: " observed ", expect: "observed"},
+		{input: "custom", expect: ""},
+	}
+
+	for _, tt := range tests {
+		got := normalizeServiceManagementMode(tt.input)
+		if got != tt.expect {
+			t.Fatalf("normalizeServiceManagementMode(%q) = %q, want %q", tt.input, got, tt.expect)
+		}
+	}
+}
+
+func TestIsObservedService(t *testing.T) {
+	if !isObservedService(bson.M{"managementMode": "observed"}) {
+		t.Fatalf("observed service should be detected")
+	}
+	if isObservedService(bson.M{"managementMode": "managed"}) {
+		t.Fatalf("managed service should not be detected as observed")
+	}
+	if isObservedService(bson.M{}) {
+		t.Fatalf("missing management mode should default to managed")
+	}
+}
+
 func TestVersionAliasAndImageReferenceHelpers(t *testing.T) {
 	if !isDeployVersionAlias("") {
 		t.Fatalf("empty version should be alias")

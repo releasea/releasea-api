@@ -12,6 +12,8 @@ import (
 	credentialmodels "releaseaapi/internal/features/credentials/models"
 	deploys "releaseaapi/internal/features/deploys/api"
 	platformmodels "releaseaapi/internal/platform/models"
+	registryproviders "releaseaapi/internal/platform/providers/registry"
+	scmproviders "releaseaapi/internal/platform/providers/scm"
 	"releaseaapi/internal/platform/shared"
 
 	"github.com/gin-gonic/gin"
@@ -50,11 +52,14 @@ func CreateScmCredential(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Token or private key required")
 		return
 	}
-	if payload.Provider == "" {
-		payload.Provider = "github"
-	}
 	if payload.AuthType == "" {
 		payload.AuthType = "token"
+	}
+	payload.Provider = scmproviders.Normalize(payload.Provider)
+	payload.AuthType = strings.ToLower(strings.TrimSpace(payload.AuthType))
+	if err := scmproviders.ValidateCredential(payload.Provider, payload.AuthType); err != nil {
+		shared.RespondError(c, http.StatusBadRequest, err.Error())
+		return
 	}
 	scope := normalizeScope(payload.Scope)
 
@@ -97,6 +102,23 @@ func UpdateScmCredential(c *gin.Context) {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	defer cancel()
+	existing, err := shared.FindOne(ctx, shared.Collection(shared.ScmCredentialsCollection), bson.M{"id": credID})
+	if err != nil {
+		shared.RespondError(c, http.StatusNotFound, "SCM credential not found")
+		return
+	}
+	nextProvider := scmproviders.Normalize(firstNonEmpty(payload.Provider, shared.StringValue(existing["provider"])))
+	nextAuthType := strings.ToLower(strings.TrimSpace(firstNonEmpty(payload.AuthType, shared.StringValue(existing["authType"]))))
+	if nextAuthType == "" {
+		nextAuthType = "token"
+	}
+	if err := scmproviders.ValidateCredential(nextProvider, nextAuthType); err != nil {
+		shared.RespondError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	update := bson.M{
 		"updatedAt": shared.NowISO(),
 	}
@@ -104,10 +126,10 @@ func UpdateScmCredential(c *gin.Context) {
 		update["name"] = payload.Name
 	}
 	if payload.Provider != "" {
-		update["provider"] = payload.Provider
+		update["provider"] = nextProvider
 	}
 	if payload.AuthType != "" {
-		update["authType"] = payload.AuthType
+		update["authType"] = nextAuthType
 	}
 	if payload.Token != "" {
 		update["token"] = payload.Token
@@ -128,8 +150,6 @@ func UpdateScmCredential(c *gin.Context) {
 		update["notes"] = payload.Notes
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
-	defer cancel()
 	if err := shared.UpdateByID(ctx, shared.Collection(shared.ScmCredentialsCollection), credID, update); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to update SCM credential")
 		return
@@ -191,6 +211,11 @@ func CreateRegistryCredential(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Registry username and password required")
 		return
 	}
+	payload.Provider = registryproviders.Normalize(payload.Provider)
+	if err := registryproviders.ValidateCredential(payload.Provider); err != nil {
+		shared.RespondError(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	scope := normalizeScope(payload.Scope)
 	id := "reg-cred-" + uuid.NewString()
 	now := shared.NowISO()
@@ -231,6 +256,19 @@ func UpdateRegistryCredential(c *gin.Context) {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	defer cancel()
+	existing, err := shared.FindOne(ctx, shared.Collection(shared.RegistryCredentialsCollection), bson.M{"id": credID})
+	if err != nil {
+		shared.RespondError(c, http.StatusNotFound, "Registry credential not found")
+		return
+	}
+	nextProvider := registryproviders.Normalize(firstNonEmpty(payload.Provider, shared.StringValue(existing["provider"])))
+	if err := registryproviders.ValidateCredential(nextProvider); err != nil {
+		shared.RespondError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	update := bson.M{
 		"updatedAt": shared.NowISO(),
 	}
@@ -238,7 +276,7 @@ func UpdateRegistryCredential(c *gin.Context) {
 		update["name"] = payload.Name
 	}
 	if payload.Provider != "" {
-		update["provider"] = payload.Provider
+		update["provider"] = nextProvider
 	}
 	if payload.RegistryURL != "" {
 		update["registryUrl"] = payload.RegistryURL
@@ -262,8 +300,6 @@ func UpdateRegistryCredential(c *gin.Context) {
 		update["notes"] = payload.Notes
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
-	defer cancel()
 	if err := shared.UpdateByID(ctx, shared.Collection(shared.RegistryCredentialsCollection), credID, update); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to update registry credential")
 		return
@@ -472,6 +508,16 @@ func secretFingerprint(secret string) string {
 	}
 	sum := sha256.Sum256([]byte(secret))
 	return hex.EncodeToString(sum[:4])
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func normalizeScope(scope string) string {

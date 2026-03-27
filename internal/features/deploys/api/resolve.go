@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	secretsproviders "releaseaapi/internal/platform/providers/secrets"
 	"releaseaapi/internal/platform/shared"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -122,27 +123,5 @@ func ResolveSecretProvider(ctx context.Context, service bson.M) (bson.M, error) 
 	if err != nil {
 		return bson.M{}, err
 	}
-	secrets, _ := settings["secrets"].(bson.M)
-	defaultID := shared.StringValue(secrets["defaultProviderId"])
-	providerID := shared.StringValue(service["secretProviderId"])
-	if providerID == "" {
-		providerID = defaultID
-	}
-	if providerID == "" {
-		return bson.M{}, nil
-	}
-	rawProviders, _ := secrets["providers"].([]interface{})
-	for _, item := range rawProviders {
-		switch provider := item.(type) {
-		case bson.M:
-			if shared.StringValue(provider["id"]) == providerID {
-				return provider, nil
-			}
-		case map[string]interface{}:
-			if shared.StringValue(provider["id"]) == providerID {
-				return bson.M(provider), nil
-			}
-		}
-	}
-	return bson.M{}, nil
+	return secretsproviders.ResolveConfiguredProviderDocument(settings, shared.StringValue(service["secretProviderId"])), nil
 }

@@ -2,6 +2,7 @@ package models
 
 import (
 	"releaseaapi/internal/platform/shared"
+	"strings"
 
 	"go.mongodb.org/mongo-driver/bson"
 )
@@ -42,11 +43,16 @@ type Service struct {
 	CPU                  int
 	Memory               int
 	RepoManaged          bool
+	ManagementMode       string
 	DeploymentStrategy   interface{}
 	Environment          interface{}
 }
 
 func ServiceFromBSON(doc bson.M) Service {
+	managementMode := strings.ToLower(strings.TrimSpace(shared.StringValue(doc["managementMode"])))
+	if managementMode != "observed" {
+		managementMode = "managed"
+	}
 	return Service{
 		ID:                   shared.StringValue(doc["id"]),
 		Name:                 shared.StringValue(doc["name"]),
@@ -83,6 +89,7 @@ func ServiceFromBSON(doc bson.M) Service {
 		CPU:                  shared.IntValue(doc["cpu"]),
 		Memory:               shared.IntValue(doc["memory"]),
 		RepoManaged:          shared.BoolValue(doc["repoManaged"]),
+		ManagementMode:       managementMode,
 		DeploymentStrategy:   doc["deploymentStrategy"],
 		Environment:          doc["environment"],
 	}
@@ -124,5 +131,6 @@ func (s Service) ToWorkerPayload() map[string]interface{} {
 		"deployTemplateId":   s.DeployTemplateID,
 		"secretProviderId":   s.SecretProviderID,
 		"repoManaged":        s.RepoManaged,
+		"managementMode":     s.ManagementMode,
 	}
 }

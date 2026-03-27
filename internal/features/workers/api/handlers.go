@@ -393,6 +393,7 @@ func Heartbeat(c *gin.Context) {
 		DesiredAgents           int      `json:"desiredAgents"`
 		DeploymentName          string   `json:"deploymentName"`
 		DeploymentNamespace     string   `json:"deploymentNamespace"`
+		DiscoveredWorkloads     []bson.M `json:"discoveredWorkloads"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
@@ -465,6 +466,10 @@ func Heartbeat(c *gin.Context) {
 	}
 	if payload.DeploymentNamespace != "" {
 		workerDoc["deploymentNamespace"] = payload.DeploymentNamespace
+	}
+	if payload.DiscoveredWorkloads != nil {
+		workerDoc["discoveredWorkloads"] = payload.DiscoveredWorkloads
+		workerDoc["discoveredWorkloadsUpdatedAt"] = now
 	}
 
 	existing, err := shared.FindOne(ctx, shared.Collection(shared.WorkersCollection), bson.M{"id": payload.ID})

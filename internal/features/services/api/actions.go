@@ -2,16 +2,12 @@ package services
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 
 	operations "releaseaapi/internal/features/operations/api"
-	gh "releaseaapi/internal/platform/integrations/github"
-	"releaseaapi/internal/platform/models"
+	scmproviders "releaseaapi/internal/platform/providers/scm"
 	operationqueue "releaseaapi/internal/platform/queue"
 	"releaseaapi/internal/platform/shared"
 
@@ -121,6 +117,13 @@ func PromoteCanary(c *gin.Context) {
 
 	service, ok := loadDeployServiceOrRespond(c, ctx, request.ServiceID)
 	if !ok {
+		return
+	}
+	if isObservedService(service) {
+		c.JSON(http.StatusConflict, gin.H{
+			"message": "Observed services cannot be deployed by Releasea. Switch the service to managed mode first.",
+			"code":    "SERVICE_OBSERVED_MODE",
+		})
 		return
 	}
 	strategyType := resolveServiceDeployStrategyType(service)
@@ -266,6 +269,21 @@ func normalizeServiceSourceType(sourceType string) string {
 	default:
 		return ""
 	}
+}
+
+func normalizeServiceManagementMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "managed":
+		return "managed"
+	case "observed":
+		return "observed"
+	default:
+		return ""
+	}
+}
+
+func isObservedService(service bson.M) bool {
+	return normalizeServiceManagementMode(shared.StringValue(service["managementMode"])) == "observed"
 }
 
 func isRegistrySourceType(sourceType string) bool {
@@ -480,10 +498,6 @@ func isImageReference(value string) bool {
 
 func resolveLatestServiceCommitSHA(ctx context.Context, service bson.M, branch string) (string, error) {
 	repoURL := strings.TrimSpace(shared.StringValue(service["repoUrl"]))
-	repo, ok := gh.ParseRepo(repoURL)
-	if !ok {
-		return "", errors.New("repository URL is not a valid GitHub repository")
-	}
 
 	project, err := loadServiceProject(ctx, service)
 	if err != nil {
@@ -503,34 +517,12 @@ func resolveLatestServiceCommitSHA(ctx context.Context, service bson.M, branch s
 	}
 
 	provider := strings.ToLower(strings.TrimSpace(shared.StringValue(credential["provider"])))
-	if provider != "" && provider != "github" {
-		return "", fmt.Errorf("unsupported SCM provider %q", provider)
-	}
-
-	apiURL := fmt.Sprintf(
-		"https://api.github.com/repos/%s/%s/commits/%s",
-		url.PathEscape(repo.Owner),
-		url.PathEscape(repo.Name),
-		url.PathEscape(branch),
-	)
-	body, status, err := gh.Request(ctx, token, http.MethodGet, apiURL, nil)
+	runtime, err := scmproviders.ResolveRuntimeForCapability(provider, scmproviders.CapabilityCommitLookup)
 	if err != nil {
-		return "", fmt.Errorf("GitHub request failed: %w", err)
-	}
-	if err := gh.ResponseError(status, body, "Failed to fetch latest commit"); err != nil {
 		return "", err
 	}
 
-	var commitResponse models.GitHubCommitHeadResponse
-	if err := json.Unmarshal(body, &commitResponse); err != nil {
-		return "", fmt.Errorf("failed to parse latest commit response: %w", err)
-	}
-
-	sha := strings.TrimSpace(commitResponse.Sha)
-	if sha == "" {
-		return "", errors.New("latest commit SHA missing")
-	}
-	return sha, nil
+	return runtime.LatestCommitSHA(ctx, token, repoURL, branch)
 }
 
 func loadServiceProject(ctx context.Context, service bson.M) (bson.M, error) {

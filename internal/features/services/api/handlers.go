@@ -129,6 +129,14 @@ func CreateService(c *gin.Context) {
 			delete(payload, "sourceType")
 		}
 	}
+	if rawManagementMode := strings.TrimSpace(shared.StringValue(payload["managementMode"])); rawManagementMode != "" {
+		normalized := normalizeServiceManagementMode(rawManagementMode)
+		if normalized == "" {
+			shared.RespondError(c, http.StatusBadRequest, "Invalid management mode")
+			return
+		}
+		payload["managementMode"] = normalized
+	}
 
 	id := "svc-" + uuid.NewString()
 	payload["_id"] = id
@@ -142,6 +150,9 @@ func CreateService(c *gin.Context) {
 	}
 	if _, ok := payload["ruleIds"]; !ok {
 		payload["ruleIds"] = []interface{}{}
+	}
+	if _, ok := payload["managementMode"]; !ok {
+		payload["managementMode"] = "managed"
 	}
 	if _, ok := payload["sourceType"]; !ok {
 		if shared.StringValue(payload["repoUrl"]) != "" {
@@ -160,6 +171,9 @@ func CreateService(c *gin.Context) {
 	}
 	if _, ok := payload["autoDeploy"]; !ok {
 		payload["autoDeploy"] = true
+	}
+	if normalizeServiceManagementMode(shared.StringValue(payload["managementMode"])) == "observed" {
+		payload["autoDeploy"] = false
 	}
 	if _, ok := payload["pauseOnIdle"]; !ok {
 		payload["pauseOnIdle"] = false
@@ -234,6 +248,14 @@ func UpdateService(c *gin.Context) {
 			delete(payload, "sourceType")
 		}
 	}
+	if rawManagementMode := strings.TrimSpace(shared.StringValue(payload["managementMode"])); rawManagementMode != "" {
+		normalized := normalizeServiceManagementMode(rawManagementMode)
+		if normalized == "" {
+			shared.RespondError(c, http.StatusBadRequest, "Invalid management mode")
+			return
+		}
+		payload["managementMode"] = normalized
+	}
 	if _, ok := payload["deployTemplateId"]; !ok {
 		if _, hasSource := payload["sourceType"]; hasSource {
 			payload["deployTemplateId"] = resolveDeployTemplateID(payload)
@@ -264,6 +286,9 @@ func UpdateService(c *gin.Context) {
 	}
 	scaleEnv := strings.TrimSpace(shared.StringValue(payload["scaleEnvironment"]))
 	delete(payload, "scaleEnvironment")
+	if normalizeServiceManagementMode(shared.StringValue(payload["managementMode"])) == "observed" {
+		payload["autoDeploy"] = false
+	}
 	payload["updatedAt"] = shared.NowISO()
 	if err := shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, payload); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to update service")

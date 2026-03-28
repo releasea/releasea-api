@@ -122,6 +122,10 @@ func ensurePlatformDefaults(cfg *config.Config) error {
 			"environments": []string{"prod"},
 			"minApprovers": 1,
 		},
+		"deployPolicy": bson.M{
+			"enabled": false,
+			"rules":   []interface{}{},
+		},
 		"rulePublishApproval": bson.M{
 			"enabled":      false,
 			"externalOnly": false,

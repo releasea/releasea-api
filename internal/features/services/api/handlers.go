@@ -2,12 +2,14 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math"
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +22,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 const (
@@ -27,6 +30,46 @@ const (
 	minPauseIdleTimeoutSeconds             = 60
 	maxPauseIdleTimeoutSeconds             = 7 * 24 * 60 * 60
 )
+
+var findServiceForDeployPolicyCheck = func(ctx context.Context, serviceID string) (bson.M, error) {
+	return shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID})
+}
+
+var evaluateServiceDeployPolicyCheck = func(
+	ctx context.Context,
+	service bson.M,
+	environment string,
+	version string,
+) (deployPolicyEvaluationResult, error) {
+	sourceType := normalizeServiceSourceType(shared.StringValue(service["sourceType"]))
+	if sourceType == "" {
+		if strings.TrimSpace(shared.StringValue(service["repoUrl"])) != "" {
+			sourceType = "git"
+		} else if strings.TrimSpace(shared.StringValue(service["dockerImage"])) != "" {
+			sourceType = "registry"
+		}
+	}
+
+	if strings.TrimSpace(version) == "" {
+		if sourceType == "registry" {
+			version = "latest"
+		} else {
+			version = "head"
+		}
+	}
+
+	return evaluateDeployPolicyWithResolvedInputs(
+		ctx,
+		service,
+		environment,
+		"manual",
+		sourceType,
+		resolveDeployPolicyRegistryHost(service, deployResolution{}),
+		resolveServiceDeployStrategyType(service),
+		resolveServiceDeployReplicaTarget(service),
+		!isDeployVersionAlias(version),
+	)
+}
 
 // Services
 
@@ -137,6 +180,7 @@ func CreateService(c *gin.Context) {
 		}
 		payload["managementMode"] = normalized
 	}
+	normalizeServiceWorkerTagsPayload(payload)
 
 	id := "svc-" + uuid.NewString()
 	payload["_id"] = id
@@ -256,6 +300,7 @@ func UpdateService(c *gin.Context) {
 		}
 		payload["managementMode"] = normalized
 	}
+	normalizeServiceWorkerTagsPayload(payload)
 	if _, ok := payload["deployTemplateId"]; !ok {
 		if _, hasSource := payload["sourceType"]; hasSource {
 			payload["deployTemplateId"] = resolveDeployTemplateID(payload)
@@ -288,6 +333,14 @@ func UpdateService(c *gin.Context) {
 	delete(payload, "scaleEnvironment")
 	if normalizeServiceManagementMode(shared.StringValue(payload["managementMode"])) == "observed" {
 		payload["autoDeploy"] = false
+	}
+	if blockedFields := detectObservedRestrictedMutationFields(existing, payload, strategyPayloadProvided, nextStrategy, scheduleChanged); len(blockedFields) > 0 {
+		c.JSON(http.StatusConflict, gin.H{
+			"message":       fmt.Sprintf("Observed services cannot change live runtime or delivery settings until switched back to managed mode. Blocked fields: %s.", strings.Join(blockedFields, ", ")),
+			"code":          "SERVICE_OBSERVED_RESTRICTED_MUTATION",
+			"blockedFields": blockedFields,
+		})
+		return
 	}
 	payload["updatedAt"] = shared.NowISO()
 	if err := shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, payload); err != nil {
@@ -737,6 +790,218 @@ func normalizeScheduleValue(value interface{}) string {
 	}
 }
 
+func detectObservedRestrictedMutationFields(
+	existing bson.M,
+	payload bson.M,
+	strategyPayloadProvided bool,
+	nextStrategy normalizedServiceStrategy,
+	scheduleChanged bool,
+) []string {
+	if !isObservedService(existing) {
+		return nil
+	}
+
+	nextMode := normalizeServiceManagementMode(shared.StringValue(payload["managementMode"]))
+	if nextMode == "" {
+		nextMode = normalizeServiceManagementMode(shared.StringValue(existing["managementMode"]))
+	}
+	if nextMode != "observed" {
+		return nil
+	}
+
+	blockedFields := make([]string, 0, 8)
+	addBlockedField := func(label string) {
+		if !containsObservedBlockedField(blockedFields, label) {
+			blockedFields = append(blockedFields, label)
+		}
+	}
+
+	if observedSourceTypeChanged(existing, payload) {
+		addBlockedField("source type")
+	}
+	for _, field := range []struct {
+		key   string
+		label string
+	}{
+		{key: "repoUrl", label: "repository URL"},
+		{key: "branch", label: "branch"},
+		{key: "rootDir", label: "root directory"},
+		{key: "dockerImage", label: "container image"},
+		{key: "dockerContext", label: "docker context"},
+		{key: "dockerfilePath", label: "dockerfile path"},
+		{key: "dockerCommand", label: "container command"},
+		{key: "preDeployCommand", label: "pre-deploy command"},
+		{key: "framework", label: "framework"},
+		{key: "installCommand", label: "install command"},
+		{key: "buildCommand", label: "build command"},
+		{key: "outputDir", label: "output directory"},
+		{key: "cacheTtl", label: "cache TTL"},
+		{key: "scmCredentialId", label: "SCM credential"},
+		{key: "registryCredentialId", label: "registry credential"},
+		{key: "secretProviderId", label: "secret provider"},
+		{key: "healthCheckPath", label: "health check path"},
+		{key: "profileId", label: "runtime profile"},
+	} {
+		if observedStringFieldChanged(existing, payload, field.key, strings.TrimSpace) {
+			addBlockedField(field.label)
+		}
+	}
+
+	if observedIntFieldChanged(existing, payload, "port", shared.IntValue(existing["port"])) {
+		addBlockedField("service port")
+	}
+	if observedIntFieldChanged(existing, payload, "minReplicas", normalizedMinReplicas(existing)) ||
+		observedIntFieldChanged(existing, payload, "maxReplicas", normalizedMaxReplicas(existing)) {
+		addBlockedField("replica bounds")
+	}
+	if observedIntFieldChanged(existing, payload, "pauseIdleTimeoutSeconds", pauseIdleDefaultTimeoutSeconds()) {
+		addBlockedField("idle timeout")
+	}
+	if observedBoolFieldChanged(existing, payload, "pauseOnIdle", false) {
+		addBlockedField("idle pause")
+	}
+	if environmentPayloadChanged(existing, payload) {
+		addBlockedField("environment variables")
+	}
+	if scheduleChanged {
+		addBlockedField("schedule")
+	}
+	if strategyPayloadProvided && normalizedServiceStrategyFromRaw(existing["deploymentStrategy"]) != nextStrategy {
+		addBlockedField("deployment strategy")
+	}
+
+	sort.Strings(blockedFields)
+	return blockedFields
+}
+
+func observedStringFieldChanged(
+	existing bson.M,
+	payload bson.M,
+	key string,
+	normalize func(string) string,
+) bool {
+	value, ok := payload[key]
+	if !ok {
+		return false
+	}
+	return normalize(shared.StringValue(existing[key])) != normalize(shared.StringValue(value))
+}
+
+func observedSourceTypeChanged(existing bson.M, payload bson.M) bool {
+	value, ok := payload["sourceType"]
+	if !ok {
+		return false
+	}
+	current := normalizeServiceSourceType(shared.StringValue(existing["sourceType"]))
+	if current == "" {
+		if strings.TrimSpace(shared.StringValue(existing["repoUrl"])) != "" {
+			current = "git"
+		} else if strings.TrimSpace(shared.StringValue(existing["dockerImage"])) != "" {
+			current = "registry"
+		}
+	}
+	return current != normalizeServiceSourceType(shared.StringValue(value))
+}
+
+func observedIntFieldChanged(existing bson.M, payload bson.M, key string, fallback int) bool {
+	value, ok := payload[key]
+	if !ok {
+		return false
+	}
+	current := shared.IntValue(existing[key])
+	if current <= 0 {
+		current = fallback
+	}
+	next := shared.IntValue(value)
+	if next <= 0 {
+		next = fallback
+	}
+	return current != next
+}
+
+func observedBoolFieldChanged(existing bson.M, payload bson.M, key string, fallback bool) bool {
+	value, ok := payload[key]
+	if !ok {
+		return false
+	}
+	currentRaw, exists := existing[key]
+	current := fallback
+	if exists {
+		current = shared.BoolValue(currentRaw)
+	}
+	return current != shared.BoolValue(value)
+}
+
+func environmentPayloadChanged(existing bson.M, payload bson.M) bool {
+	value, ok := payload["environment"]
+	if !ok {
+		return false
+	}
+	current := normalizeServiceEnvironmentPayload(existing["environment"])
+	next := normalizeServiceEnvironmentPayload(value)
+	if len(current) != len(next) {
+		return true
+	}
+	for key, currentValue := range current {
+		if next[key] != currentValue {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeServiceEnvironmentPayload(value interface{}) map[string]string {
+	source := shared.MapPayload(value)
+	if len(source) == 0 {
+		return map[string]string{}
+	}
+	normalized := make(map[string]string, len(source))
+	for key, raw := range source {
+		trimmedKey := strings.TrimSpace(key)
+		if trimmedKey == "" {
+			continue
+		}
+		normalized[trimmedKey] = shared.StringValue(raw)
+	}
+	return normalized
+}
+
+func normalizedMinReplicas(service bson.M) int {
+	if minReplicas := shared.IntValue(service["minReplicas"]); minReplicas > 0 {
+		return minReplicas
+	}
+	if replicas := shared.IntValue(service["replicas"]); replicas > 0 {
+		return replicas
+	}
+	return 1
+}
+
+func normalizedMaxReplicas(service bson.M) int {
+	minReplicas := normalizedMinReplicas(service)
+	if maxReplicas := shared.IntValue(service["maxReplicas"]); maxReplicas > 0 {
+		if maxReplicas < minReplicas {
+			return minReplicas
+		}
+		return maxReplicas
+	}
+	if replicas := shared.IntValue(service["replicas"]); replicas > minReplicas {
+		return replicas
+	}
+	if minReplicas > 3 {
+		return minReplicas
+	}
+	return 3
+}
+
+func containsObservedBlockedField(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 func isCronJobService(service bson.M) bool {
 	return strings.EqualFold(shared.StringValue(service["deployTemplateId"]), "tpl-cronjob")
 }
@@ -797,7 +1062,7 @@ func queueServiceDeployOperation(ctx context.Context, service bson.M, environmen
 		return nil
 	}
 	environment = shared.NormalizeOperationEnvironment(environment)
-	if err := ensureActiveWorkerForEnvironment(ctx, environment); err != nil {
+	if err := ensureActiveWorkerForEnvironment(ctx, environment, serviceWorkerTags(service)); err != nil {
 		return err
 	}
 	activeDeploys, err := shared.Collection(shared.DeploysCollection).CountDocuments(ctx, bson.M{
@@ -860,6 +1125,9 @@ func queueServiceDeployOperation(ctx context.Context, service bson.M, environmen
 		"requestedBy": triggeredBy,
 		"serviceName": serviceName,
 	}
+	if workerTags := serviceWorkerTags(service); len(workerTags) > 0 {
+		shared.MapPayload(opDoc["payload"])["workerTags"] = workerTags
+	}
 	if err := shared.InsertOne(ctx, shared.Collection(shared.OperationsCollection), opDoc); err != nil {
 		return err
 	}
@@ -883,6 +1151,9 @@ func DeleteService(c *gin.Context) {
 	service, err := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID})
 	if err != nil {
 		shared.RespondError(c, http.StatusNotFound, "Service not found")
+		return
+	}
+	if respondIfObservedServiceDeleteBlocked(c, service) {
 		return
 	}
 
@@ -961,6 +1232,17 @@ func DeleteService(c *gin.Context) {
 	})
 
 	c.JSON(http.StatusAccepted, gin.H{"status": "deleting"})
+}
+
+func respondIfObservedServiceDeleteBlocked(c *gin.Context, service bson.M) bool {
+	if !isObservedService(service) {
+		return false
+	}
+	c.JSON(http.StatusConflict, gin.H{
+		"message": "Observed services cannot be deleted through Releasea while the runtime remains unmanaged. Switch the service to managed mode first.",
+		"code":    "SERVICE_OBSERVED_MODE",
+	})
+	return true
 }
 
 func deployBlocksServiceDeletion(deploy bson.M) bool {
@@ -1475,4 +1757,82 @@ func GetServiceBuilds(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, builds)
+}
+
+func GetServiceGovernanceEvents(c *gin.Context) {
+	serviceID := strings.TrimSpace(c.Param("id"))
+	if serviceID == "" {
+		shared.RespondError(c, http.StatusBadRequest, "Service ID required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	defer cancel()
+
+	if _, err := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID}); err != nil {
+		shared.RespondError(c, http.StatusNotFound, "Service not found")
+		return
+	}
+
+	items, err := shared.FindAll(ctx, shared.Collection(shared.GovernanceAuditCollection), bson.M{
+		"action": bson.M{
+			"$in": []string{
+				"governance.deploy_policy.blocked",
+				"governance.rule_publish_policy.blocked",
+			},
+		},
+		"$or": []bson.M{
+			{"resourceId": serviceID},
+			{"details.serviceId": serviceID},
+		},
+	})
+	if err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to load governance events")
+		return
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		return shared.StringValue(items[i]["performedAt"]) > shared.StringValue(items[j]["performedAt"])
+	})
+	c.JSON(http.StatusOK, items)
+}
+
+func GetServiceDeployPolicyCheck(c *gin.Context) {
+	serviceID := strings.TrimSpace(c.Param("id"))
+	if serviceID == "" {
+		shared.RespondError(c, http.StatusBadRequest, "Service ID required")
+		return
+	}
+
+	environment := shared.NormalizeOperationEnvironment(c.Query("environment"))
+	if environment == "" {
+		shared.RespondError(c, http.StatusBadRequest, "Environment required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	defer cancel()
+
+	service, err := findServiceForDeployPolicyCheck(ctx, serviceID)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			shared.RespondError(c, http.StatusNotFound, "Service not found")
+			return
+		}
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to load service")
+		return
+	}
+
+	evaluation, err := evaluateServiceDeployPolicyCheck(
+		ctx,
+		service,
+		environment,
+		strings.TrimSpace(c.Query("version")),
+	)
+	if err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to evaluate deploy policy")
+		return
+	}
+
+	c.JSON(http.StatusOK, evaluation)
 }

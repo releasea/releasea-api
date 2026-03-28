@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"strings"
@@ -265,6 +266,80 @@ func (githubRuntime) DeleteManagedRepo(ctx context.Context, token, repoURL, proj
 	return gh.DeleteManagedRepo(ctx, token, repo, projectID, allowWithoutMarker)
 }
 
+func (githubRuntime) CreateDesiredStatePullRequest(
+	ctx context.Context,
+	token string,
+	payload scmmodels.DesiredStatePullRequestRequest,
+) (*scmmodels.DesiredStatePullRequestResponse, error) {
+	repo, ok := gh.ParseRepo(payload.RepoURL)
+	if !ok {
+		return nil, errors.New("repository URL is not a valid GitHub repository")
+	}
+
+	client := httpclient.New(20 * time.Second)
+
+	baseBranch := strings.TrimSpace(payload.BaseBranch)
+	if baseBranch == "" {
+		baseBranch = "main"
+	}
+	baseSHA, err := fetchGithubBranchSHA(ctx, client, token, repo.Owner, repo.Name, baseBranch)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := createGithubBranch(ctx, client, token, repo.Owner, repo.Name, payload.BranchName, baseSHA); err != nil {
+		return nil, err
+	}
+
+	files := make([]scmmodels.DesiredStatePullRequestFile, 0, 1+len(payload.AdditionalFiles))
+	files = append(files, scmmodels.DesiredStatePullRequestFile{
+		Path:    payload.FilePath,
+		Content: payload.Content,
+	})
+	files = append(files, payload.AdditionalFiles...)
+	if err := putGithubPullRequestFiles(ctx, client, token, repo.Owner, repo.Name, payload, files); err != nil {
+		return nil, err
+	}
+
+	return openGithubPullRequest(ctx, client, token, repo.Owner, repo.Name, payload)
+}
+
+func (githubRuntime) ReadFileContent(ctx context.Context, token, repoURL, path, ref string) (string, error) {
+	repo, ok := gh.ParseRepo(repoURL)
+	if !ok {
+		return "", errors.New("repository URL is not a valid GitHub repository")
+	}
+	client := httpclient.New(15 * time.Second)
+	apiURL := fmt.Sprintf(
+		"%s/repos/%s/%s/contents/%s?ref=%s",
+		strings.TrimRight(githubAPIBaseURL, "/"),
+		url.PathEscape(repo.Owner),
+		url.PathEscape(repo.Name),
+		gh.EscapePath(path),
+		url.QueryEscape(strings.TrimSpace(ref)),
+	)
+	body, status, err := gh.RequestWithClient(ctx, client, token, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("GitHub request failed: %w", err)
+	}
+	if status == http.StatusNotFound {
+		return "", fs.ErrNotExist
+	}
+	if err := gh.ResponseError(status, body, "Failed to read repository file"); err != nil {
+		return "", err
+	}
+
+	var response scmmodels.GitHubBlobInfo
+	if err := json.Unmarshal(body, &response); err != nil {
+		return "", fmt.Errorf("failed to parse repository file content: %w", err)
+	}
+	decoded, err := decodeGithubBlobContent(&response)
+	if err != nil {
+		return "", err
+	}
+	return string(decoded), nil
+}
+
 func loadTemplateManifest(
 	ctx context.Context,
 	client *http.Client,
@@ -317,6 +392,196 @@ func validateTemplateManifest(manifest *scmmodels.TemplateManifest, templatePath
 		return fmt.Errorf("template manifest path mismatch for %s", strings.TrimSpace(templatePath))
 	}
 	return nil
+}
+
+func fetchGithubBranchSHA(ctx context.Context, client *http.Client, token, owner, repo, branch string) (string, error) {
+	apiURL := fmt.Sprintf(
+		"%s/repos/%s/%s/git/ref/heads/%s",
+		strings.TrimRight(githubAPIBaseURL, "/"),
+		url.PathEscape(owner),
+		url.PathEscape(repo),
+		url.PathEscape(branch),
+	)
+	body, status, err := gh.RequestWithClient(ctx, client, token, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("GitHub request failed: %w", err)
+	}
+	if err := gh.ResponseError(status, body, "Failed to load base branch reference"); err != nil {
+		return "", err
+	}
+
+	var ref scmmodels.GitHubRefInfo
+	if err := json.Unmarshal(body, &ref); err != nil {
+		return "", fmt.Errorf("failed to parse branch reference: %w", err)
+	}
+	sha := strings.TrimSpace(ref.Object.Sha)
+	if sha == "" {
+		return "", errors.New("base branch SHA missing")
+	}
+	return sha, nil
+}
+
+func createGithubBranch(ctx context.Context, client *http.Client, token, owner, repo, branchName, sha string) error {
+	apiURL := fmt.Sprintf(
+		"%s/repos/%s/%s/git/refs",
+		strings.TrimRight(githubAPIBaseURL, "/"),
+		url.PathEscape(owner),
+		url.PathEscape(repo),
+	)
+	payload := map[string]string{
+		"ref": "refs/heads/" + strings.TrimSpace(branchName),
+		"sha": strings.TrimSpace(sha),
+	}
+	body, status, err := gh.RequestWithClient(ctx, client, token, http.MethodPost, apiURL, payload)
+	if err != nil {
+		return fmt.Errorf("GitHub request failed: %w", err)
+	}
+	if err := gh.ResponseError(status, body, "Failed to create GitOps branch"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func fetchGithubContentSHA(ctx context.Context, client *http.Client, token, owner, repo, path, branch string) (string, error) {
+	apiURL := fmt.Sprintf(
+		"%s/repos/%s/%s/contents/%s?ref=%s",
+		strings.TrimRight(githubAPIBaseURL, "/"),
+		url.PathEscape(owner),
+		url.PathEscape(repo),
+		gh.EscapePath(path),
+		url.QueryEscape(branch),
+	)
+	body, status, err := gh.RequestWithClient(ctx, client, token, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("GitHub request failed: %w", err)
+	}
+	if status == http.StatusNotFound {
+		return "", nil
+	}
+	if err := gh.ResponseError(status, body, "Failed to inspect desired state file"); err != nil {
+		return "", err
+	}
+
+	var item scmmodels.GitHubContentItemResponse
+	if err := json.Unmarshal(body, &item); err != nil {
+		return "", fmt.Errorf("failed to parse desired state file metadata: %w", err)
+	}
+	return strings.TrimSpace(item.Sha), nil
+}
+
+func putGithubFileContent(
+	ctx context.Context,
+	client *http.Client,
+	token, owner, repo string,
+	payload scmmodels.DesiredStatePullRequestRequest,
+	existingSHA string,
+) error {
+	apiURL := fmt.Sprintf(
+		"%s/repos/%s/%s/contents/%s",
+		strings.TrimRight(githubAPIBaseURL, "/"),
+		url.PathEscape(owner),
+		url.PathEscape(repo),
+		gh.EscapePath(payload.FilePath),
+	)
+	requestPayload := map[string]string{
+		"message": payload.CommitMessage,
+		"content": base64.StdEncoding.EncodeToString([]byte(payload.Content)),
+		"branch":  payload.BranchName,
+	}
+	if strings.TrimSpace(existingSHA) != "" {
+		requestPayload["sha"] = strings.TrimSpace(existingSHA)
+	}
+
+	body, status, err := gh.RequestWithClient(ctx, client, token, http.MethodPut, apiURL, requestPayload)
+	if err != nil {
+		return fmt.Errorf("GitHub request failed: %w", err)
+	}
+	if err := gh.ResponseError(status, body, "Failed to write desired state file"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func putGithubPullRequestFiles(
+	ctx context.Context,
+	client *http.Client,
+	token, owner, repo string,
+	payload scmmodels.DesiredStatePullRequestRequest,
+	files []scmmodels.DesiredStatePullRequestFile,
+) error {
+	for _, file := range files {
+		path := strings.TrimSpace(file.Path)
+		if path == "" {
+			continue
+		}
+		existingSHA, err := fetchGithubContentSHA(ctx, client, token, owner, repo, path, payload.BranchName)
+		if err != nil {
+			return err
+		}
+		if err := putGithubFileContent(ctx, client, token, owner, repo, scmmodels.DesiredStatePullRequestRequest{
+			FilePath:      path,
+			Content:       file.Content,
+			CommitMessage: payload.CommitMessage,
+			BranchName:    payload.BranchName,
+		}, existingSHA); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func openGithubPullRequest(
+	ctx context.Context,
+	client *http.Client,
+	token, owner, repo string,
+	payload scmmodels.DesiredStatePullRequestRequest,
+) (*scmmodels.DesiredStatePullRequestResponse, error) {
+	apiURL := fmt.Sprintf(
+		"%s/repos/%s/%s/pulls",
+		strings.TrimRight(githubAPIBaseURL, "/"),
+		url.PathEscape(owner),
+		url.PathEscape(repo),
+	)
+	requestPayload := map[string]string{
+		"title": payload.Title,
+		"head":  payload.BranchName,
+		"base":  payload.BaseBranch,
+		"body":  payload.Body,
+	}
+	body, status, err := gh.RequestWithClient(ctx, client, token, http.MethodPost, apiURL, requestPayload)
+	if err != nil {
+		return nil, fmt.Errorf("GitHub request failed: %w", err)
+	}
+	if err := gh.ResponseError(status, body, "Failed to open GitOps pull request"); err != nil {
+		return nil, err
+	}
+
+	var pr scmmodels.GitHubPullRequestResponse
+	if err := json.Unmarshal(body, &pr); err != nil {
+		return nil, fmt.Errorf("failed to parse pull request response: %w", err)
+	}
+	return &scmmodels.DesiredStatePullRequestResponse{
+		URL:        strings.TrimSpace(pr.HTMLURL),
+		Number:     pr.Number,
+		BaseBranch: payload.BaseBranch,
+		BranchName: payload.BranchName,
+		FilePath:   payload.FilePath,
+		FilePaths:  collectPullRequestFilePaths(payload),
+		Title:      payload.Title,
+	}, nil
+}
+
+func collectPullRequestFilePaths(payload scmmodels.DesiredStatePullRequestRequest) []string {
+	paths := make([]string, 0, 1+len(payload.AdditionalFiles))
+	if trimmed := strings.TrimSpace(payload.FilePath); trimmed != "" {
+		paths = append(paths, trimmed)
+	}
+	for _, file := range payload.AdditionalFiles {
+		if trimmed := strings.TrimSpace(file.Path); trimmed != "" {
+			paths = append(paths, trimmed)
+		}
+	}
+	return paths
 }
 
 func fetchGithubRepoInfo(ctx context.Context, client *http.Client, token, owner, repo string) (*scmmodels.GitHubRepoInfo, error) {

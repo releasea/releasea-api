@@ -23,6 +23,14 @@ const (
 	approvalStatusRejected = shared.GovernanceApprovalStatusRejected
 )
 
+var findGovernanceAuditEntries = func(ctx context.Context) ([]bson.M, error) {
+	return shared.FindAll(ctx, shared.Collection(shared.GovernanceAuditCollection), bson.M{})
+}
+
+var findPlatformAuditEntries = func(ctx context.Context) ([]bson.M, error) {
+	return shared.FindAll(ctx, shared.Collection(shared.PlatformAuditCollection), bson.M{})
+}
+
 func authValue(c *gin.Context, key string) string {
 	if value, ok := c.Get(key); ok {
 		if text, ok := value.(string); ok {
@@ -73,6 +81,27 @@ func normalizeGovernanceEnvironments(values []string) []string {
 	return result
 }
 
+func normalizeDeployPolicyRules(values []governancemodels.DeployPolicyRule) []bson.M {
+	raw := make([]interface{}, 0, len(values))
+	for _, value := range values {
+		raw = append(raw, bson.M{
+			"environment":              value.Environment,
+			"allowAutoDeploy":          value.AllowAutoDeploy,
+			"requireExplicitVersion":   value.RequireExplicitVersion,
+			"blockExternalExposure":    value.BlockExternalExposure,
+			"allowedProfileIds":        value.AllowedProfileIDs,
+			"allowedScmProviders":      value.AllowedSCMProviders,
+			"allowedRegistryProviders": value.AllowedRegistryProviders,
+			"allowedSecretProviders":   value.AllowedSecretProviders,
+			"allowedSourceTypes":       value.AllowedSourceTypes,
+			"allowedRegistries":        value.AllowedRegistries,
+			"allowedStrategies":        value.AllowedStrategies,
+			"maxReplicas":              value.MaxReplicas,
+		})
+	}
+	return shared.NormalizeDeployPolicyRules(raw)
+}
+
 func recordGovernanceAudit(
 	ctx context.Context,
 	action string,
@@ -98,6 +127,141 @@ func recordGovernanceAudit(
 		doc["details"] = details
 	}
 	_ = shared.InsertOne(ctx, shared.Collection(shared.GovernanceAuditCollection), doc)
+}
+
+func normalizeGovernanceAuditEntry(item bson.M) bson.M {
+	performedBy := shared.MapPayload(item["performedBy"])
+	if len(performedBy) == 0 {
+		performedBy = map[string]interface{}{
+			"id":    "system",
+			"name":  "System",
+			"email": "",
+		}
+	}
+
+	resourceID := shared.StringValue(item["resourceId"])
+	resourceName := strings.TrimSpace(shared.StringValue(item["resourceName"]))
+	if resourceName == "" {
+		resourceName = resourceID
+	}
+	if resourceName == "" {
+		resourceName = "Governance event"
+	}
+
+	entry := bson.M{
+		"id":           shared.StringValue(item["id"]),
+		"action":       shared.StringValue(item["action"]),
+		"resourceType": shared.StringValue(item["resourceType"]),
+		"resourceId":   resourceID,
+		"resourceName": resourceName,
+		"performedBy":  performedBy,
+		"performedAt":  shared.StringValue(item["performedAt"]),
+	}
+	if details := shared.MapPayload(item["details"]); len(details) > 0 {
+		entry["details"] = details
+	}
+	if ipAddress := strings.TrimSpace(shared.StringValue(item["ipAddress"])); ipAddress != "" {
+		entry["ipAddress"] = ipAddress
+	}
+	return entry
+}
+
+func resolvePlatformAuditResourceName(item bson.M, actor map[string]interface{}, metadata map[string]interface{}) string {
+	if name := strings.TrimSpace(shared.StringValue(metadata["name"])); name != "" {
+		return name
+	}
+	if name := strings.TrimSpace(shared.StringValue(metadata["resourceName"])); name != "" {
+		return name
+	}
+
+	resourceType := strings.TrimSpace(shared.StringValue(item["resourceType"]))
+	resourceID := strings.TrimSpace(shared.StringValue(item["resourceId"]))
+
+	if resourceType == "user" {
+		if name := strings.TrimSpace(shared.StringValue(actor["name"])); name != "" {
+			return name
+		}
+	}
+
+	if resourceType == "operation" {
+		nestedType := strings.TrimSpace(shared.StringValue(metadata["resourceType"]))
+		nestedID := strings.TrimSpace(shared.StringValue(metadata["resourceId"]))
+		if nestedType != "" && nestedID != "" {
+			return fmt.Sprintf("%s %s", nestedType, nestedID)
+		}
+		if operationType := strings.TrimSpace(shared.StringValue(metadata["type"])); operationType != "" {
+			if resourceID != "" {
+				return fmt.Sprintf("%s (%s)", operationType, resourceID)
+			}
+			return operationType
+		}
+	}
+
+	if resourceID != "" {
+		return resourceID
+	}
+	if resourceType != "" {
+		return fmt.Sprintf("%s event", resourceType)
+	}
+	return "Platform event"
+}
+
+func normalizePlatformAuditEntry(item bson.M) bson.M {
+	actor := shared.MapPayload(item["actor"])
+	if len(actor) == 0 {
+		actor = map[string]interface{}{
+			"id":   "system",
+			"name": "System",
+			"role": "",
+		}
+	}
+	metadata := shared.MapPayload(item["metadata"])
+	details := make(map[string]interface{}, len(metadata)+3)
+	for key, value := range metadata {
+		details[key] = value
+	}
+	if source := strings.TrimSpace(shared.StringValue(item["source"])); source != "" {
+		details["source"] = source
+	}
+	if status := strings.TrimSpace(shared.StringValue(item["status"])); status != "" {
+		details["status"] = status
+	}
+	if message := strings.TrimSpace(shared.StringValue(item["message"])); message != "" {
+		details["message"] = message
+	}
+
+	resourceID := strings.TrimSpace(shared.StringValue(item["resourceId"]))
+	entry := bson.M{
+		"id":           shared.StringValue(item["id"]),
+		"action":       shared.StringValue(item["action"]),
+		"resourceType": shared.StringValue(item["resourceType"]),
+		"resourceId":   resourceID,
+		"resourceName": resolvePlatformAuditResourceName(item, actor, metadata),
+		"performedBy": bson.M{
+			"id":    shared.StringValue(actor["id"]),
+			"name":  shared.StringValue(actor["name"]),
+			"email": "",
+		},
+		"performedAt": shared.StringValue(item["createdAt"]),
+	}
+	if len(details) > 0 {
+		entry["details"] = details
+	}
+	return entry
+}
+
+func buildUnifiedGovernanceAuditFeed(platformEntries, governanceEntries []bson.M) []bson.M {
+	items := make([]bson.M, 0, len(platformEntries)+len(governanceEntries))
+	for _, entry := range platformEntries {
+		items = append(items, normalizePlatformAuditEntry(entry))
+	}
+	for _, entry := range governanceEntries {
+		items = append(items, normalizeGovernanceAuditEntry(entry))
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return shared.StringValue(items[i]["performedAt"]) > shared.StringValue(items[j]["performedAt"])
+	})
+	return items
 }
 
 func GetGovernanceSettings(c *gin.Context) {
@@ -154,6 +318,10 @@ func UpdateGovernanceSettings(c *gin.Context) {
 			"environments": normalizeGovernanceEnvironments(payload.DeployApproval.Environments),
 			"minApprovers": minDeployApprovers,
 		},
+		"deployPolicy": bson.M{
+			"enabled": payload.DeployPolicy.Enabled,
+			"rules":   normalizeDeployPolicyRules(payload.DeployPolicy.Rules),
+		},
 		"rulePublishApproval": bson.M{
 			"enabled":      payload.RulePublishApproval.Enabled,
 			"externalOnly": payload.RulePublishApproval.ExternalOnly,
@@ -182,6 +350,7 @@ func UpdateGovernanceSettings(c *gin.Context) {
 		performedBy,
 		map[string]interface{}{
 			"deployApproval":      update["deployApproval"],
+			"deployPolicy":        update["deployPolicy"],
 			"rulePublishApproval": update["rulePublishApproval"],
 			"auditRetentionDays":  auditRetentionDays,
 		},
@@ -476,13 +645,15 @@ func GetGovernanceAudit(c *gin.Context) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
-	items, err := shared.FindAll(ctx, shared.Collection(shared.GovernanceAuditCollection), bson.M{})
+	governanceEntries, err := findGovernanceAuditEntries(ctx)
 	if err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to load audit logs")
 		return
 	}
-	sort.Slice(items, func(i, j int) bool {
-		return shared.StringValue(items[i]["performedAt"]) > shared.StringValue(items[j]["performedAt"])
-	})
-	c.JSON(http.StatusOK, items)
+	platformEntries, err := findPlatformAuditEntries(ctx)
+	if err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to load audit logs")
+		return
+	}
+	c.JSON(http.StatusOK, buildUnifiedGovernanceAuditFeed(platformEntries, governanceEntries))
 }

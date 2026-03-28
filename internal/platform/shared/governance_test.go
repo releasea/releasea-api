@@ -176,3 +176,178 @@ func TestMinApproversForApprovalType(t *testing.T) {
 		t.Fatalf("invalid type min approvers = %d, want 1", got)
 	}
 }
+
+func TestNormalizeDeployPolicyRules(t *testing.T) {
+	rules := NormalizeDeployPolicyRules([]interface{}{
+		bson.M{
+			"environment":              " prod ",
+			"allowAutoDeploy":          false,
+			"requireExplicitVersion":   true,
+			"blockExternalExposure":    true,
+			"allowedProfileIds":        []string{" rp-medium ", "rp-medium", "RP-LARGE"},
+			"allowedScmProviders":      []string{" github ", "gitlab", "GitHub"},
+			"allowedRegistryProviders": []string{" ghcr ", "docker", "GHCR"},
+			"allowedSecretProviders":   []string{" vault ", "gcp", "VAULT"},
+			"allowedSourceTypes":       []string{" git ", "registry", "git", "invalid"},
+			"allowedRegistries":        []string{" ghcr.io ", "https://ghcr.io", "index.docker.io", "invalid/host"},
+			"allowedStrategies":        []string{" rolling ", "canary", "rolling", "invalid"},
+			"maxReplicas":              5,
+		},
+		bson.M{
+			"environment":       "dev",
+			"allowAutoDeploy":   true,
+			"allowedStrategies": []string{"blue-green"},
+			"maxReplicas":       -1,
+		},
+	})
+
+	if len(rules) != 2 {
+		t.Fatalf("expected 2 normalized rules, got %d", len(rules))
+	}
+	if got := rules[1]["environment"]; got != "prod" {
+		t.Fatalf("expected prod rule to be normalized, got %v", got)
+	}
+	if got := rules[1]["allowedStrategies"]; len(got.([]string)) != 2 {
+		t.Fatalf("expected deduplicated strategies, got %v", got)
+	}
+	if got := rules[1]["requireExplicitVersion"]; got != true {
+		t.Fatalf("expected requireExplicitVersion to be normalized, got %v", got)
+	}
+	if got := rules[1]["blockExternalExposure"]; got != true {
+		t.Fatalf("expected blockExternalExposure to be normalized, got %v", got)
+	}
+	if got := rules[1]["allowedSourceTypes"]; len(got.([]string)) != 2 {
+		t.Fatalf("expected normalized allowedSourceTypes, got %v", got)
+	}
+	if got := rules[1]["allowedRegistries"]; len(got.([]string)) != 2 {
+		t.Fatalf("expected normalized allowedRegistries, got %v", got)
+	}
+	if got := rules[1]["allowedProfileIds"]; len(got.([]string)) != 2 {
+		t.Fatalf("expected normalized allowedProfileIds, got %v", got)
+	}
+	if got := rules[1]["allowedScmProviders"]; len(got.([]string)) != 2 {
+		t.Fatalf("expected normalized allowedScmProviders, got %v", got)
+	}
+	if got := rules[1]["allowedRegistryProviders"]; len(got.([]string)) != 2 {
+		t.Fatalf("expected normalized allowedRegistryProviders, got %v", got)
+	}
+	if got := rules[1]["allowedSecretProviders"]; len(got.([]string)) != 2 {
+		t.Fatalf("expected normalized allowedSecretProviders, got %v", got)
+	}
+	if got := rules[0]["maxReplicas"]; got != 0 {
+		t.Fatalf("expected negative maxReplicas to normalize to 0, got %v", got)
+	}
+}
+
+func TestEvaluateExternalExposurePolicy(t *testing.T) {
+	settings := bson.M{
+		"deployPolicy": bson.M{
+			"enabled": true,
+			"rules": []interface{}{
+				bson.M{
+					"environment":           "prod",
+					"blockExternalExposure": true,
+				},
+			},
+		},
+	}
+
+	violations := EvaluateExternalExposurePolicy(settings, "prod", true)
+	if len(violations) != 1 {
+		t.Fatalf("expected 1 exposure policy violation, got %d", len(violations))
+	}
+	if violations[0].Code != "external-exposure-disabled" {
+		t.Fatalf("expected external-exposure-disabled code, got %q", violations[0].Code)
+	}
+
+	if got := EvaluateExternalExposurePolicy(settings, "prod", false); len(got) != 0 {
+		t.Fatalf("expected no exposure violations for internal-only publish, got %v", got)
+	}
+}
+
+func TestEvaluateDeployPolicy(t *testing.T) {
+	settings := bson.M{
+		"deployPolicy": bson.M{
+			"enabled": true,
+			"rules": []interface{}{
+				bson.M{
+					"environment":            "prod",
+					"allowAutoDeploy":        false,
+					"requireExplicitVersion": true,
+					"allowedSourceTypes":     []string{"registry"},
+					"allowedRegistries":      []string{"ghcr.io"},
+					"allowedStrategies":      []string{"rolling"},
+					"maxReplicas":            3,
+				},
+			},
+		},
+	}
+
+	violations := EvaluateDeployPolicy(settings, "prod", "auto", "canary", "git", "docker.io", 5, false, GovernanceDeployPolicyTarget{})
+	if len(violations) != 6 {
+		t.Fatalf("expected 6 policy violations, got %d", len(violations))
+	}
+	if violations[0].Environment != "prod" {
+		t.Fatalf("expected prod environment, got %q", violations[0].Environment)
+	}
+	if violations[0].Code == "" {
+		t.Fatalf("expected violation code")
+	}
+
+	if got := EvaluateDeployPolicy(settings, "dev", "manual", "rolling", "registry", "ghcr.io", 1, true, GovernanceDeployPolicyTarget{}); len(got) != 0 {
+		t.Fatalf("expected no violations for unmatched environment, got %v", got)
+	}
+}
+
+func TestEvaluateDeployPolicyAllowsWhitelistedRegistry(t *testing.T) {
+	settings := bson.M{
+		"deployPolicy": bson.M{
+			"enabled": true,
+			"rules": []interface{}{
+				bson.M{
+					"environment":       "prod",
+					"allowedRegistries": []string{"ghcr.io", "docker.io"},
+				},
+			},
+		},
+	}
+
+	if got := EvaluateDeployPolicy(settings, "prod", "manual", "rolling", "registry", "ghcr.io", 1, true, GovernanceDeployPolicyTarget{}); len(got) != 0 {
+		t.Fatalf("expected allowed registry to pass, got %v", got)
+	}
+
+	violations := EvaluateDeployPolicy(settings, "prod", "manual", "rolling", "registry", "", 1, true, GovernanceDeployPolicyTarget{})
+	if len(violations) != 1 || violations[0].Code != "registry-host-unresolved" {
+		t.Fatalf("expected unresolved registry host violation, got %v", violations)
+	}
+}
+
+func TestEvaluateDeployPolicyChecksProfileAndProviders(t *testing.T) {
+	settings := bson.M{
+		"deployPolicy": bson.M{
+			"enabled": true,
+			"rules": []interface{}{
+				bson.M{
+					"environment":              "prod",
+					"allowedProfileIds":        []string{"rp-medium"},
+					"allowedScmProviders":      []string{"github"},
+					"allowedRegistryProviders": []string{"ghcr"},
+					"allowedSecretProviders":   []string{"vault"},
+				},
+			},
+		},
+	}
+
+	violations := EvaluateDeployPolicy(settings, "prod", "manual", "rolling", "git", "ghcr.io", 1, true, GovernanceDeployPolicyTarget{
+		ProfileID:        "rp-large",
+		SCMProvider:      "gitlab",
+		RegistryProvider: "docker",
+		SecretProvider:   "gcp",
+	})
+	if len(violations) != 3 {
+		t.Fatalf("expected 3 provider/profile violations, got %d", len(violations))
+	}
+	if violations[0].Code == "" {
+		t.Fatalf("expected violation codes to be populated")
+	}
+}

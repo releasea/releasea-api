@@ -3,6 +3,7 @@ package scmproviders
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"slices"
 	"strings"
 
@@ -15,6 +16,8 @@ const (
 	CapabilityTemplateRepo  = "template-repos"
 	CapabilityCommitLookup  = "commit-history"
 	CapabilityManagedDelete = "managed-delete"
+	CapabilityPullRequests  = "pull-requests"
+	CapabilityRepoFiles     = "repo-files"
 )
 
 type Definition struct {
@@ -35,7 +38,11 @@ type Runtime interface {
 	ListCommitsByRepoURL(ctx context.Context, token, repoURL, branch string) ([]scmmodels.CommitEntry, error)
 	LatestCommitSHA(ctx context.Context, token, repoURL, branch string) (string, error)
 	DeleteManagedRepo(ctx context.Context, token, repoURL, projectID string, allowWithoutMarker bool) (bool, error)
+	CreateDesiredStatePullRequest(ctx context.Context, token string, payload scmmodels.DesiredStatePullRequestRequest) (*scmmodels.DesiredStatePullRequestResponse, error)
+	ReadFileContent(ctx context.Context, token, repoURL, path, ref string) (string, error)
 }
+
+var ErrFileNotFound = fs.ErrNotExist
 
 var registry = map[string]Definition{
 	"github": {
@@ -43,7 +50,7 @@ var registry = map[string]Definition{
 		Label:        "GitHub",
 		Description:  "Built-in GitHub support used by templates, commit lookup and managed repository operations.",
 		AuthModes:    []string{"token", "ssh"},
-		Capabilities: []string{CapabilityRepoClone, CapabilityTemplateRepo, CapabilityCommitLookup, CapabilityManagedDelete},
+		Capabilities: []string{CapabilityRepoClone, CapabilityTemplateRepo, CapabilityCommitLookup, CapabilityManagedDelete, CapabilityPullRequests, CapabilityRepoFiles},
 		ScopeSupport: []string{"platform", "project", "service"},
 	},
 	"gitlab": {

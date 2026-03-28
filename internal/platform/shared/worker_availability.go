@@ -29,10 +29,71 @@ func NormalizeOperationEnvironment(value string) string {
 }
 
 func WorkerUnavailableMessage(environment string) string {
+	return WorkerUnavailableMessageWithTags(environment, nil)
+}
+
+func WorkerUnavailableMessageWithTags(environment string, requiredTags []string) string {
+	normalizedTags := NormalizeWorkerTags(requiredTags)
+	if len(normalizedTags) == 0 {
+		return fmt.Sprintf(
+			"No active worker available for %s environment",
+			NormalizeOperationEnvironment(environment),
+		)
+	}
 	return fmt.Sprintf(
-		"No active worker available for %s environment",
+		"No active worker available for %s environment matching tags: %s",
 		NormalizeOperationEnvironment(environment),
+		strings.Join(normalizedTags, ", "),
 	)
+}
+
+func NormalizeWorkerTags(tags []string) []string {
+	normalized := make([]string, 0, len(tags))
+	seen := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		trimmed := strings.TrimSpace(tag)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		normalized = append(normalized, trimmed)
+	}
+	return normalized
+}
+
+func WorkerSatisfiesEnvironmentAndTags(worker bson.M, environment string, requiredTags []string, heartbeatThreshold time.Time) bool {
+	workerEnvironment := strings.TrimSpace(StringValue(worker["environment"]))
+	if workerEnvironment == "" {
+		return false
+	}
+	if !EnvironmentsShareNamespace(workerEnvironment, NormalizeOperationEnvironment(environment)) {
+		return false
+	}
+	if onlineAgents, ok := worker["onlineAgents"]; ok && IntValue(onlineAgents) <= 0 {
+		return false
+	}
+	if !isWorkerHeartbeatFresh(worker, heartbeatThreshold) {
+		return false
+	}
+
+	requiredTags = NormalizeWorkerTags(requiredTags)
+	if len(requiredTags) == 0 {
+		return true
+	}
+
+	availableTags := make(map[string]struct{}, len(requiredTags))
+	for _, tag := range NormalizeWorkerTags(ToStringSlice(worker["tags"])) {
+		availableTags[tag] = struct{}{}
+	}
+	for _, tag := range requiredTags {
+		if _, ok := availableTags[tag]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func workerStaleSeconds() int {
@@ -57,6 +118,10 @@ func isWorkerHeartbeatFresh(worker bson.M, threshold time.Time) bool {
 }
 
 func HasActiveWorkerForEnvironment(ctx context.Context, environment string) (bool, error) {
+	return HasActiveWorkerForEnvironmentAndTags(ctx, environment, nil)
+}
+
+func HasActiveWorkerForEnvironmentAndTags(ctx context.Context, environment string, requiredTags []string) (bool, error) {
 	normalizedEnvironment := NormalizeOperationEnvironment(environment)
 	heartbeatThreshold := time.Now().UTC().Add(-time.Duration(workerStaleSeconds()) * time.Second)
 
@@ -73,20 +138,9 @@ func HasActiveWorkerForEnvironment(ctx context.Context, environment string) (boo
 	}
 
 	for _, worker := range workers {
-		workerEnvironment := strings.TrimSpace(StringValue(worker["environment"]))
-		if workerEnvironment == "" {
-			continue
+		if WorkerSatisfiesEnvironmentAndTags(worker, normalizedEnvironment, requiredTags, heartbeatThreshold) {
+			return true, nil
 		}
-		if !EnvironmentsShareNamespace(workerEnvironment, normalizedEnvironment) {
-			continue
-		}
-		if onlineAgents, ok := worker["onlineAgents"]; ok && IntValue(onlineAgents) <= 0 {
-			continue
-		}
-		if !isWorkerHeartbeatFresh(worker, heartbeatThreshold) {
-			continue
-		}
-		return true, nil
 	}
 	return false, nil
 }

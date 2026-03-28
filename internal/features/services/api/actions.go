@@ -58,7 +58,7 @@ func CreateDeploy(c *gin.Context) {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to check deploy queue")
 		return
 	}
-	if !ensureWorkerAvailabilityOrRespond(c, ctx, request.Environment) {
+	if !ensureWorkerAvailabilityOrRespond(c, ctx, request.Environment, serviceWorkerTags(service)) {
 		return
 	}
 
@@ -70,8 +70,14 @@ func CreateDeploy(c *gin.Context) {
 	triggeredBy := resolveDeployTriggeredBy(c, request.Trigger)
 	serviceName := resolveDeployServiceName(request.ServiceID, service)
 	strategyType := resolveServiceDeployStrategyType(service)
+	replicaTarget := resolveServiceDeployReplicaTarget(service)
+	registryHost := resolveDeployPolicyRegistryHost(service, resolution)
 
-	if maybeRespondDeployApprovalRequired(c, ctx, request, resolution, serviceName, triggeredBy, strategyType, resources, resourcesYAML) {
+	if maybeRespondDeployPolicyBlocked(c, ctx, request.ServiceID, serviceName, service, request.Environment, request.Trigger, sourceType, registryHost, strategyType, replicaTarget, !isDeployVersionAlias(request.Version)) {
+		return
+	}
+
+	if maybeRespondDeployApprovalRequired(c, ctx, request, resolution, serviceName, triggeredBy, strategyType, serviceWorkerTags(service), resources, resourcesYAML) {
 		return
 	}
 
@@ -88,6 +94,7 @@ func CreateDeploy(c *gin.Context) {
 		request,
 		resolution,
 		strategyType,
+		serviceWorkerTags(service),
 		serviceName,
 		triggeredBy,
 		deployID,
@@ -99,6 +106,17 @@ func CreateDeploy(c *gin.Context) {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to queue deploy")
 		return
 	}
+	recordPlatformDeployAudit(ctx, c, "deploy.queued", deployID, "accepted", map[string]interface{}{
+		"name":         serviceName,
+		"serviceId":    request.ServiceID,
+		"environment":  request.Environment,
+		"operationId":  operationID,
+		"strategyType": strategyType,
+		"sourceType":   sourceType,
+		"trigger":      request.Trigger,
+		"version":      resolution.Version,
+		"image":        resolution.Image,
+	})
 
 	if !publishOperationOrRespondQueued(c, ctx, operationID, opDoc, gin.H{"deploy": deployDoc}) {
 		return
@@ -127,8 +145,21 @@ func PromoteCanary(c *gin.Context) {
 		return
 	}
 	strategyType := resolveServiceDeployStrategyType(service)
+	sourceType := normalizeServiceSourceType(shared.StringValue(service["sourceType"]))
+	if sourceType == "" {
+		if strings.TrimSpace(shared.StringValue(service["repoUrl"])) != "" {
+			sourceType = "git"
+		} else if strings.TrimSpace(shared.StringValue(service["dockerImage"])) != "" {
+			sourceType = "registry"
+		}
+	}
 	if strategyType != "canary" {
 		shared.RespondError(c, http.StatusBadRequest, "Service is not using canary strategy")
+		return
+	}
+	replicaTarget := resolveServiceDeployReplicaTarget(service)
+	registryHost := resolveDeployPolicyRegistryHost(service, deployResolution{})
+	if maybeRespondDeployPolicyBlocked(c, ctx, request.ServiceID, shared.StringValue(service["name"]), service, request.Environment, "manual", sourceType, registryHost, strategyType, replicaTarget, true) {
 		return
 	}
 
@@ -140,7 +171,7 @@ func PromoteCanary(c *gin.Context) {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to check promote queue")
 		return
 	}
-	if !ensureWorkerAvailabilityOrRespond(c, ctx, request.Environment) {
+	if !ensureWorkerAvailabilityOrRespond(c, ctx, request.Environment, serviceWorkerTags(service)) {
 		return
 	}
 
@@ -156,11 +187,19 @@ func PromoteCanary(c *gin.Context) {
 	}
 
 	requestedBy := resolveRequestedByOrSystem(c)
-	opDoc, operationID, err := persistPromoteCanaryOperation(ctx, request.ServiceID, request.Environment, shared.StringValue(service["name"]), requestedBy, now)
+	opDoc, operationID, err := persistPromoteCanaryOperation(ctx, request.ServiceID, request.Environment, serviceWorkerTags(service), shared.StringValue(service["name"]), requestedBy, now)
 	if err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to queue promote")
 		return
 	}
+	recordPlatformDeployAudit(ctx, c, "deploy.promote_canary.queued", operationID, "accepted", map[string]interface{}{
+		"name":         shared.StringValue(service["name"]),
+		"serviceId":    request.ServiceID,
+		"environment":  request.Environment,
+		"operationId":  operationID,
+		"strategyType": strategyType,
+		"sourceType":   sourceType,
+	})
 	if !publishOperationOrRespondQueued(c, ctx, operationID, opDoc, nil) {
 		return
 	}
@@ -269,6 +308,31 @@ func normalizeServiceSourceType(sourceType string) string {
 	default:
 		return ""
 	}
+}
+
+func resolvePolicyRegistryHostFromImage(image string) string {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return ""
+	}
+
+	parts := strings.Split(image, "/")
+	if len(parts) < 2 {
+		return "docker.io"
+	}
+
+	host := strings.TrimSpace(parts[0])
+	if strings.Contains(host, ".") || strings.Contains(host, ":") || strings.EqualFold(host, "localhost") {
+		return shared.NormalizeRegistryHost(host)
+	}
+	return "docker.io"
+}
+
+func resolveDeployPolicyRegistryHost(service bson.M, resolution deployResolution) string {
+	if host := resolvePolicyRegistryHostFromImage(resolution.Image); host != "" {
+		return host
+	}
+	return resolvePolicyRegistryHostFromImage(shared.StringValue(service["dockerImage"]))
 }
 
 func normalizeServiceManagementMode(mode string) string {

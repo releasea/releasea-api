@@ -69,24 +69,33 @@ func GetDiscoveredWorkloads(c *gin.Context) {
 			}
 
 			item := bson.M{
-				"id":              key,
-				"workerId":        workerID,
-				"workerName":      workerName,
-				"environment":     workerEnvironment,
-				"cluster":         cluster,
-				"namespace":       namespace,
-				"kind":            kind,
-				"name":            name,
-				"images":          shared.ToStringSlice(workload["images"]),
-				"primaryImage":    shared.StringValue(workload["primaryImage"]),
-				"ports":           toPositiveIntSlice(shared.ToInterfaceSlice(workload["ports"])),
-				"port":            shared.IntValue(workload["port"]),
-				"replicas":        shared.IntValue(workload["replicas"]),
-				"scheduleCron":    shared.StringValue(workload["scheduleCron"]),
-				"healthCheckPath": shared.StringValue(workload["healthCheckPath"]),
-				"serviceType":     "microservice",
-				"templateKind":    templateKind,
-				"sourceType":      "registry",
+				"id":                   key,
+				"workerId":             workerID,
+				"workerName":           workerName,
+				"environment":          workerEnvironment,
+				"cluster":              cluster,
+				"namespace":            namespace,
+				"kind":                 kind,
+				"name":                 name,
+				"containers":           toDiscoveredContainers(shared.ToInterfaceSlice(workload["containers"])),
+				"serviceHints":         toDiscoveredServiceHints(shared.ToInterfaceSlice(workload["serviceHints"])),
+				"ingressHints":         toDiscoveredIngressHints(shared.ToInterfaceSlice(workload["ingressHints"])),
+				"images":               shared.ToStringSlice(workload["images"]),
+				"primaryImage":         shared.StringValue(workload["primaryImage"]),
+				"ports":                toPositiveIntSlice(shared.ToInterfaceSlice(workload["ports"])),
+				"port":                 shared.IntValue(workload["port"]),
+				"replicas":             shared.IntValue(workload["replicas"]),
+				"scheduleCron":         shared.StringValue(workload["scheduleCron"]),
+				"healthCheckPath":      shared.StringValue(workload["healthCheckPath"]),
+				"probes":               toDiscoveredProbes(shared.ToInterfaceSlice(workload["probes"])),
+				"environmentVariables": toDiscoveredEnvironmentVariables(shared.ToInterfaceSlice(workload["environmentVariables"])),
+				"command":              shared.ToStringSlice(workload["command"]),
+				"args":                 shared.ToStringSlice(workload["args"]),
+				"cpuMilli":             shared.IntValue(workload["cpuMilli"]),
+				"memoryMi":             shared.IntValue(workload["memoryMi"]),
+				"serviceType":          "microservice",
+				"templateKind":         templateKind,
+				"sourceType":           "registry",
 			}
 			workloads = append(workloads, item)
 		}
@@ -131,6 +140,134 @@ func toPositiveIntSlice(values []interface{}) []int {
 		if value > 0 {
 			out = append(out, value)
 		}
+	}
+	return out
+}
+
+func toDiscoveredContainers(values []interface{}) []bson.M {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]bson.M, 0, len(values))
+	for _, raw := range values {
+		entry := shared.MapPayload(raw)
+		name := strings.TrimSpace(shared.StringValue(entry["name"]))
+		image := strings.TrimSpace(shared.StringValue(entry["image"]))
+		if name == "" && image == "" {
+			continue
+		}
+		out = append(out, bson.M{
+			"name":     name,
+			"image":    image,
+			"ports":    toPositiveIntSlice(shared.ToInterfaceSlice(entry["ports"])),
+			"imported": shared.BoolValue(entry["imported"]),
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func toDiscoveredServiceHints(values []interface{}) []bson.M {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]bson.M, 0, len(values))
+	for _, raw := range values {
+		entry := shared.MapPayload(raw)
+		name := strings.TrimSpace(shared.StringValue(entry["name"]))
+		if name == "" {
+			continue
+		}
+		out = append(out, bson.M{
+			"name":     name,
+			"type":     strings.TrimSpace(shared.StringValue(entry["type"])),
+			"ports":    toPositiveIntSlice(shared.ToInterfaceSlice(entry["ports"])),
+			"headless": shared.BoolValue(entry["headless"]),
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func toDiscoveredIngressHints(values []interface{}) []bson.M {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]bson.M, 0, len(values))
+	for _, raw := range values {
+		entry := shared.MapPayload(raw)
+		name := strings.TrimSpace(shared.StringValue(entry["name"]))
+		if name == "" {
+			continue
+		}
+		out = append(out, bson.M{
+			"name":         name,
+			"serviceNames": shared.ToStringSlice(entry["serviceNames"]),
+			"hosts":        shared.ToStringSlice(entry["hosts"]),
+			"paths":        shared.ToStringSlice(entry["paths"]),
+			"tls":          shared.BoolValue(entry["tls"]),
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func toDiscoveredProbes(values []interface{}) []bson.M {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]bson.M, 0, len(values))
+	for _, raw := range values {
+		entry := shared.MapPayload(raw)
+		probeType := strings.TrimSpace(shared.StringValue(entry["type"]))
+		handler := strings.TrimSpace(shared.StringValue(entry["handler"]))
+		if probeType == "" || handler == "" {
+			continue
+		}
+		item := bson.M{
+			"type":          probeType,
+			"handler":       handler,
+			"containerName": strings.TrimSpace(shared.StringValue(entry["containerName"])),
+			"path":          strings.TrimSpace(shared.StringValue(entry["path"])),
+			"port":          strings.TrimSpace(shared.StringValue(entry["port"])),
+			"command":       shared.ToStringSlice(entry["command"]),
+			"service":       strings.TrimSpace(shared.StringValue(entry["service"])),
+		}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func toDiscoveredEnvironmentVariables(values []interface{}) []bson.M {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]bson.M, 0, len(values))
+	for _, raw := range values {
+		entry := shared.MapPayload(raw)
+		key := strings.TrimSpace(shared.StringValue(entry["key"]))
+		if key == "" {
+			continue
+		}
+		out = append(out, bson.M{
+			"key":        key,
+			"value":      shared.StringValue(entry["value"]),
+			"sourceType": strings.TrimSpace(shared.StringValue(entry["sourceType"])),
+			"reference":  strings.TrimSpace(shared.StringValue(entry["reference"])),
+			"importable": shared.BoolValue(entry["importable"]),
+		})
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

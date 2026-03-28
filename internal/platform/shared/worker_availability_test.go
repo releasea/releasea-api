@@ -23,6 +23,9 @@ func TestWorkerUnavailableMessage(t *testing.T) {
 	if got := WorkerUnavailableMessage(" dev "); got != "No active worker available for dev environment" {
 		t.Fatalf("unexpected message for provided env: %q", got)
 	}
+	if got := WorkerUnavailableMessageWithTags("prod", []string{"build", "gpu"}); got != "No active worker available for prod environment matching tags: build, gpu" {
+		t.Fatalf("unexpected message with tags: %q", got)
+	}
 }
 
 func TestWorkerStaleSeconds(t *testing.T) {
@@ -70,5 +73,25 @@ func TestIsWorkerHeartbeatFresh(t *testing.T) {
 
 	if isWorkerHeartbeatFresh(bson.M{}, threshold) {
 		t.Fatalf("missing heartbeat should not be fresh")
+	}
+}
+
+func TestWorkerSatisfiesEnvironmentAndTags(t *testing.T) {
+	threshold := time.Now().UTC().Add(-30 * time.Second)
+	worker := bson.M{
+		"environment":   "dev",
+		"onlineAgents":  1,
+		"lastHeartbeat": time.Now().UTC().Format(time.RFC3339),
+		"tags":          []string{"build", "gpu", "dev"},
+	}
+
+	if !WorkerSatisfiesEnvironmentAndTags(worker, "dev", []string{"gpu"}, threshold) {
+		t.Fatalf("expected worker to satisfy matching env and tags")
+	}
+	if WorkerSatisfiesEnvironmentAndTags(worker, "prod", []string{"gpu"}, threshold) {
+		t.Fatalf("expected worker to fail mismatched environment")
+	}
+	if WorkerSatisfiesEnvironmentAndTags(worker, "dev", []string{"edge"}, threshold) {
+		t.Fatalf("expected worker to fail missing tags")
 	}
 }

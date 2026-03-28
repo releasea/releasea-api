@@ -33,6 +33,7 @@ type Service struct {
 	HealthCheckPath      string
 	DeployTemplateID     string
 	SecretProviderID     string
+	WorkerTags           []string
 	ProjectID            string
 	SCMCredentialID      string
 	RegistryCredentialID string
@@ -79,6 +80,7 @@ func ServiceFromBSON(doc bson.M) Service {
 		HealthCheckPath:      shared.StringValue(doc["healthCheckPath"]),
 		DeployTemplateID:     shared.StringValue(doc["deployTemplateId"]),
 		SecretProviderID:     shared.StringValue(doc["secretProviderId"]),
+		WorkerTags:           shared.NormalizeWorkerTags(shared.ToStringSlice(doc["workerTags"])),
 		ProjectID:            shared.StringValue(doc["projectId"]),
 		SCMCredentialID:      shared.StringValue(doc["scmCredentialId"]),
 		RegistryCredentialID: shared.StringValue(doc["registryCredentialId"]),
@@ -130,6 +132,7 @@ func (s Service) ToWorkerPayload() map[string]interface{} {
 		"environment":        s.Environment,
 		"deployTemplateId":   s.DeployTemplateID,
 		"secretProviderId":   s.SecretProviderID,
+		"workerTags":         s.WorkerTags,
 		"repoManaged":        s.RepoManaged,
 		"managementMode":     s.ManagementMode,
 	}

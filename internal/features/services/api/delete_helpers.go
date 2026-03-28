@@ -66,6 +66,9 @@ func queueRuleDelete(ctx context.Context, rule bson.M, service bson.M, triggered
 	if environment == "" {
 		environment = "prod"
 	}
+	if err := ensureActiveWorkerForEnvironment(ctx, environment, serviceWorkerTags(service)); err != nil {
+		return err
+	}
 	serviceName := shared.StringValue(service["name"])
 	if serviceName == "" {
 		serviceName = serviceID
@@ -118,6 +121,9 @@ func queueRuleDelete(ctx context.Context, rule bson.M, service bson.M, triggered
 		"requestedBy": triggeredBy,
 		"serviceName": serviceName,
 	}
+	if workerTags := serviceWorkerTags(service); len(workerTags) > 0 {
+		shared.MapPayload(opDoc["payload"])["workerTags"] = workerTags
+	}
 	if err := shared.InsertOne(ctx, shared.Collection(shared.OperationsCollection), opDoc); err != nil {
 		return fmt.Errorf("failed to queue rule delete")
 	}
@@ -141,6 +147,9 @@ func queueServiceDelete(ctx context.Context, service bson.M, environment, trigge
 	if environment == "" {
 		environment = "prod"
 	}
+	if err := ensureActiveWorkerForEnvironment(ctx, environment, serviceWorkerTags(service)); err != nil {
+		return err
+	}
 	serviceName := shared.StringValue(service["name"])
 	if serviceName == "" {
 		serviceName = serviceID
@@ -162,6 +171,9 @@ func queueServiceDelete(ctx context.Context, service bson.M, environment, trigge
 		},
 		"requestedBy": triggeredBy,
 		"serviceName": serviceName,
+	}
+	if workerTags := serviceWorkerTags(service); len(workerTags) > 0 {
+		shared.MapPayload(opDoc["payload"])["workerTags"] = workerTags
 	}
 	if err := shared.InsertOne(ctx, shared.Collection(shared.OperationsCollection), opDoc); err != nil {
 		return fmt.Errorf("failed to queue service delete")

@@ -18,6 +18,17 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
+func respondIfObservedRuleManagementBlocked(c *gin.Context, service bson.M) bool {
+	if !strings.EqualFold(shared.StringValue(service["managementMode"]), "observed") {
+		return false
+	}
+	c.JSON(http.StatusConflict, gin.H{
+		"message": "Observed services cannot manage rules through Releasea. Switch the service to managed mode first.",
+		"code":    "SERVICE_OBSERVED_MODE",
+	})
+	return true
+}
+
 func GetRules(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
@@ -133,6 +144,10 @@ func createRuleFromPayload(c *gin.Context, payload map[string]interface{}, servi
 	service, err := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID})
 	if err != nil {
 		shared.RespondError(c, http.StatusNotFound, "Service not found")
+		return
+	}
+	requiredWorkerTags := shared.NormalizeWorkerTags(shared.ToStringSlice(service["workerTags"]))
+	if respondIfObservedRuleManagementBlocked(c, service) {
 		return
 	}
 	serviceName := shared.StringValue(service["name"])
@@ -257,6 +272,7 @@ func createRuleFromPayload(c *gin.Context, payload map[string]interface{}, servi
 						"internal":    internal,
 						"external":    external,
 						"requestedBy": shared.AuthDisplayName(c),
+						"workerTags":  requiredWorkerTags,
 					},
 				},
 				RequiredApprovers: requiredApprovers,
@@ -268,6 +284,20 @@ func createRuleFromPayload(c *gin.Context, payload map[string]interface{}, servi
 			ruleDoc["approvalRequired"] = true
 			ruleDoc["approval"] = approvalDoc
 		} else {
+			activeWorker, workerErr := shared.HasActiveWorkerForEnvironmentAndTags(ctx, environment, requiredWorkerTags)
+			if workerErr != nil {
+				shared.RespondError(c, http.StatusInternalServerError, "Failed to validate worker availability")
+				return
+			}
+			if !activeWorker {
+				c.JSON(http.StatusConflict, gin.H{
+					"message":     shared.WorkerUnavailableMessageWithTags(environment, requiredWorkerTags),
+					"code":        shared.WorkerAvailabilityErrorCode,
+					"environment": environment,
+					"workerTags":  requiredWorkerTags,
+				})
+				return
+			}
 			operationID := "op-" + uuid.NewString()
 			opDoc := bson.M{
 				"_id":          operationID,
@@ -286,6 +316,7 @@ func createRuleFromPayload(c *gin.Context, payload map[string]interface{}, servi
 					"nextGateways":        gateways,
 					"prevStatus":          "draft",
 					"prevLastPublishedAt": "",
+					"workerTags":          requiredWorkerTags,
 				},
 				"requestedBy": shared.AuthDisplayName(c),
 			}
@@ -350,6 +381,9 @@ func UpdateRule(c *gin.Context) {
 	serviceID := shared.StringValue(existing["serviceId"])
 	if serviceID != "" {
 		if service, serviceErr := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID}); serviceErr == nil {
+			if respondIfObservedRuleManagementBlocked(c, service) {
+				return
+			}
 			serviceName = shared.StringValue(service["name"])
 		}
 	}
@@ -452,7 +486,12 @@ func DeleteRule(c *gin.Context) {
 		environment = "prod"
 	}
 	serviceName := serviceID
+	requiredWorkerTags := []string(nil)
 	if service, err := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID}); err == nil {
+		if respondIfObservedRuleManagementBlocked(c, service) {
+			return
+		}
+		requiredWorkerTags = shared.NormalizeWorkerTags(shared.ToStringSlice(service["workerTags"]))
 		if name := shared.StringValue(service["name"]); name != "" {
 			serviceName = name
 		}
@@ -512,6 +551,7 @@ func DeleteRule(c *gin.Context) {
 			"serviceName": serviceName,
 			"ruleName":    ruleName,
 			"action":      action,
+			"workerTags":  requiredWorkerTags,
 		},
 		"requestedBy": triggeredBy,
 		"serviceName": serviceName,
@@ -591,17 +631,55 @@ func PublishRule(c *gin.Context) {
 	}
 	environment = shared.NormalizeOperationEnvironment(environment)
 	serviceID := shared.StringValue(rule["serviceId"])
+	ruleName := strings.TrimSpace(shared.StringValue(rule["name"]))
+	requiredWorkerTags := []string(nil)
+	if ruleName == "" {
+		ruleName = ruleID
+	}
+	if serviceID != "" {
+		service, serviceErr := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID})
+		if serviceErr != nil && !errors.Is(serviceErr, mongo.ErrNoDocuments) {
+			shared.RespondError(c, http.StatusInternalServerError, "Failed to load rule service")
+			return
+		}
+		if serviceErr == nil && respondIfObservedRuleManagementBlocked(c, service) {
+			return
+		}
+		if serviceErr == nil {
+			requiredWorkerTags = shared.NormalizeWorkerTags(shared.ToStringSlice(service["workerTags"]))
+		}
+	}
 
-	activeWorker, workerErr := shared.HasActiveWorkerForEnvironment(ctx, environment)
+	settings, err := loadGovernanceSettingsForRulePublish(ctx)
+	if err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to load governance settings")
+		return
+	}
+	if maybeRespondRulePublishPolicyBlocked(
+		c,
+		ctx,
+		settings,
+		ruleID,
+		ruleName,
+		serviceID,
+		environment,
+		payload.Internal,
+		payload.External,
+	) {
+		return
+	}
+
+	activeWorker, workerErr := shared.HasActiveWorkerForEnvironmentAndTags(ctx, environment, requiredWorkerTags)
 	if workerErr != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to validate worker availability")
 		return
 	}
 	if !activeWorker {
 		c.JSON(http.StatusConflict, gin.H{
-			"message":     shared.WorkerUnavailableMessage(environment),
+			"message":     shared.WorkerUnavailableMessageWithTags(environment, requiredWorkerTags),
 			"code":        shared.WorkerAvailabilityErrorCode,
 			"environment": environment,
+			"workerTags":  requiredWorkerTags,
 		})
 		return
 	}
@@ -633,17 +711,8 @@ func PublishRule(c *gin.Context) {
 		triggeredBy = "System"
 	}
 
-	settings, err := shared.LoadGovernanceSettings(ctx)
-	if err != nil {
-		shared.RespondError(c, http.StatusInternalServerError, "Failed to load governance settings")
-		return
-	}
 	requiresApproval, minApprovers := shared.RulePublishApprovalRequired(settings, payload.External)
 	if requiresApproval {
-		ruleName := strings.TrimSpace(shared.StringValue(rule["name"]))
-		if ruleName == "" {
-			ruleName = ruleID
-		}
 		metadata := map[string]interface{}{
 			"environment": environment,
 			"serviceId":   serviceID,
@@ -657,6 +726,7 @@ func PublishRule(c *gin.Context) {
 				"internal":    payload.Internal,
 				"external":    payload.External,
 				"requestedBy": triggeredBy,
+				"workerTags":  requiredWorkerTags,
 			},
 		}
 		approvalDoc, existing, approvalErr := shared.CreateOrGetPendingGovernanceApproval(ctx, shared.GovernanceApprovalCreateParams{
@@ -740,6 +810,7 @@ func PublishRule(c *gin.Context) {
 			"nextGateways":        nextGateways,
 			"prevStatus":          shared.StringValue(rule["status"]),
 			"prevLastPublishedAt": shared.StringValue(rule["lastPublishedAt"]),
+			"workerTags":          requiredWorkerTags,
 		},
 		"requestedBy": triggeredBy,
 		"serviceName": shared.StringValue(rule["serviceName"]),

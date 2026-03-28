@@ -350,6 +350,17 @@ type RuleDeployQueueOptions struct {
 	CanaryPercentOverride *int
 }
 
+func loadServiceWorkerTags(ctx context.Context, serviceID string) []string {
+	if strings.TrimSpace(serviceID) == "" {
+		return nil
+	}
+	service, err := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID})
+	if err != nil {
+		return nil
+	}
+	return shared.NormalizeWorkerTags(shared.ToStringSlice(service["workerTags"]))
+}
+
 func QueueRuleDeploy(ctx context.Context, ruleID, serviceID, environment string, nextGateways, prevGateways []string, prevStatus, prevLastPublishedAt, now string) error {
 	return QueueRuleDeployWithOptions(ctx, ruleID, serviceID, environment, nextGateways, prevGateways, prevStatus, prevLastPublishedAt, now, RuleDeployQueueOptions{})
 }
@@ -417,6 +428,9 @@ func QueueRuleDeployWithOptions(
 			"prevLastPublishedAt": prevLastPublishedAt,
 		},
 		"requestedBy": "System",
+	}
+	if workerTags := loadServiceWorkerTags(ctx, serviceID); len(workerTags) > 0 {
+		shared.MapPayload(opDoc["payload"])["workerTags"] = workerTags
 	}
 	if options.CanaryPercentOverride != nil {
 		shared.MapPayload(opDoc["payload"])["canaryPercentOverride"] = *options.CanaryPercentOverride

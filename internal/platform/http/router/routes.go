@@ -144,6 +144,7 @@ func registerWorkerRoutes(rg *gin.RouterGroup) {
 	rg.POST("/workers/services/:id/blue-green/primary", services.UpdateBlueGreenPrimary)
 	rg.GET("/workers/bootstrap-profile", workers.GetWorkerBootstrapProfile)
 	rg.GET("/workers", workers.GetWorkers)
+	rg.GET("/workers/pools", workers.GetWorkerPools)
 	rg.GET("/workers/discovered-workloads", workers.GetDiscoveredWorkloads)
 	rg.PUT("/workers/:id", workers.UpdateWorker)
 	rg.DELETE("/workers/:id", workers.DeleteWorker)
@@ -185,6 +186,12 @@ func registerServiceRoutes(rg *gin.RouterGroup) {
 	rg.POST("/services/:id/deploys", platformsecurity.RequireIdempotencyKey(), services.CreateDeploy)
 	rg.POST("/services/:id/promote-canary", platformsecurity.RequireIdempotencyKey(), services.PromoteCanary)
 	rg.GET("/services/:id/builds", services.GetServiceBuilds)
+	rg.GET("/services/:id/governance-events", services.GetServiceGovernanceEvents)
+	rg.GET("/services/:id/deploy-policy-check", services.GetServiceDeployPolicyCheck)
+	rg.GET("/services/:id/desired-state", services.GetServiceDesiredState)
+	rg.GET("/services/:id/gitops/drift", services.GetServiceGitOpsDrift)
+	rg.POST("/services/:id/gitops/pull-requests", services.CreateServiceGitOpsPullRequest)
+	rg.POST("/services/:id/gitops/argocd/pull-requests", services.CreateServiceArgoCDGitOpsPullRequest)
 }
 
 func registerDeployRoutes(rg *gin.RouterGroup) {
@@ -196,6 +203,7 @@ func registerRuleRoutes(rg *gin.RouterGroup) {
 	rg.GET("/rules", rules.GetRules)
 	rg.POST("/rules", rules.CreateRule)
 	rg.GET("/rules/:id", rules.GetRule)
+	rg.GET("/rules/:id/publish-policy-check", rules.GetRulePublishPolicyCheck)
 	rg.PUT("/rules/:id", rules.UpdateRule)
 	rg.DELETE("/rules/:id", rules.DeleteRule)
 	rg.POST("/rules/:id/publish", rules.PublishRule)

@@ -6,6 +6,26 @@ type DeployApprovalSettings struct {
 	MinApprovers int      `json:"minApprovers"`
 }
 
+type DeployPolicyRule struct {
+	Environment              string   `json:"environment"`
+	AllowAutoDeploy          bool     `json:"allowAutoDeploy"`
+	RequireExplicitVersion   bool     `json:"requireExplicitVersion"`
+	BlockExternalExposure    bool     `json:"blockExternalExposure"`
+	AllowedProfileIDs        []string `json:"allowedProfileIds"`
+	AllowedSCMProviders      []string `json:"allowedScmProviders"`
+	AllowedRegistryProviders []string `json:"allowedRegistryProviders"`
+	AllowedSecretProviders   []string `json:"allowedSecretProviders"`
+	AllowedSourceTypes       []string `json:"allowedSourceTypes"`
+	AllowedRegistries        []string `json:"allowedRegistries"`
+	AllowedStrategies        []string `json:"allowedStrategies"`
+	MaxReplicas              int      `json:"maxReplicas"`
+}
+
+type DeployPolicySettings struct {
+	Enabled bool               `json:"enabled"`
+	Rules   []DeployPolicyRule `json:"rules"`
+}
+
 type RulePublishApprovalSettings struct {
 	Enabled      bool `json:"enabled"`
 	ExternalOnly bool `json:"externalOnly"`
@@ -14,6 +34,7 @@ type RulePublishApprovalSettings struct {
 
 type GovernanceSettingsPayload struct {
 	DeployApproval      DeployApprovalSettings      `json:"deployApproval"`
+	DeployPolicy        DeployPolicySettings        `json:"deployPolicy"`
 	RulePublishApproval RulePublishApprovalSettings `json:"rulePublishApproval"`
 	AuditRetentionDays  int                         `json:"auditRetentionDays"`
 }

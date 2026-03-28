@@ -119,18 +119,22 @@ func executeApprovedDeploy(ctx context.Context, approval bson.M) (bson.M, error)
 	if err != nil {
 		return nil, fmt.Errorf("service not found")
 	}
+	requiredWorkerTags := shared.NormalizeWorkerTags(shared.ToStringSlice(action["workerTags"]))
+	if len(requiredWorkerTags) == 0 {
+		requiredWorkerTags = shared.NormalizeWorkerTags(shared.ToStringSlice(service["workerTags"]))
+	}
 
 	environment := shared.NormalizeOperationEnvironment(shared.StringValue(action["environment"]))
 	if environment == "" {
 		environment = shared.NormalizeOperationEnvironment(shared.StringValue(approval["environment"]))
 	}
 
-	activeWorker, workerErr := shared.HasActiveWorkerForEnvironment(ctx, environment)
+	activeWorker, workerErr := shared.HasActiveWorkerForEnvironmentAndTags(ctx, environment, requiredWorkerTags)
 	if workerErr != nil {
 		return nil, workerErr
 	}
 	if !activeWorker {
-		return nil, errors.New(shared.WorkerUnavailableMessage(environment))
+		return nil, errors.New(shared.WorkerUnavailableMessageWithTags(environment, requiredWorkerTags))
 	}
 
 	blockedDeploy, err := shared.FindOne(ctx, shared.Collection(shared.DeploysCollection), bson.M{
@@ -206,6 +210,9 @@ func executeApprovedDeploy(ctx context.Context, approval bson.M) (bson.M, error)
 		"trigger":      trigger,
 		"resources":    resources,
 	}
+	if len(requiredWorkerTags) > 0 {
+		opPayload["workerTags"] = requiredWorkerTags
+	}
 	if deployImage != "" {
 		opPayload["image"] = deployImage
 	}
@@ -263,19 +270,30 @@ func executeApprovedRulePublish(ctx context.Context, approval bson.M) (bson.M, e
 		return nil, fmt.Errorf("rule not found")
 	}
 	environment := shared.NormalizeOperationEnvironment(shared.StringValue(action["environment"]))
+	requiredWorkerTags := shared.NormalizeWorkerTags(shared.ToStringSlice(action["workerTags"]))
 	if environment == "" {
 		environment = shared.NormalizeOperationEnvironment(shared.StringValue(approval["environment"]))
 	}
 	if environment == "" {
 		environment = shared.NormalizeOperationEnvironment(shared.StringValue(rule["environment"]))
 	}
+	serviceID := strings.TrimSpace(shared.StringValue(action["serviceId"]))
+	if serviceID == "" {
+		serviceID = shared.StringValue(rule["serviceId"])
+	}
+	if len(requiredWorkerTags) == 0 && serviceID != "" {
+		service, serviceErr := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID})
+		if serviceErr == nil {
+			requiredWorkerTags = shared.NormalizeWorkerTags(shared.ToStringSlice(service["workerTags"]))
+		}
+	}
 
-	activeWorker, workerErr := shared.HasActiveWorkerForEnvironment(ctx, environment)
+	activeWorker, workerErr := shared.HasActiveWorkerForEnvironmentAndTags(ctx, environment, requiredWorkerTags)
 	if workerErr != nil {
 		return nil, workerErr
 	}
 	if !activeWorker {
-		return nil, errors.New(shared.WorkerUnavailableMessage(environment))
+		return nil, errors.New(shared.WorkerUnavailableMessageWithTags(environment, requiredWorkerTags))
 	}
 
 	activeOperation, err := shared.FindOne(ctx, shared.Collection(shared.OperationsCollection), bson.M{
@@ -307,10 +325,6 @@ func executeApprovedRulePublish(ctx context.Context, approval bson.M) (bson.M, e
 		return nil, err
 	}
 
-	serviceID := strings.TrimSpace(shared.StringValue(action["serviceId"]))
-	if serviceID == "" {
-		serviceID = shared.StringValue(rule["serviceId"])
-	}
 	requestedBy := strings.TrimSpace(shared.StringValue(action["requestedBy"]))
 	if requestedBy == "" {
 		requestedBy = approvalRequesterName(approval)
@@ -351,6 +365,7 @@ func executeApprovedRulePublish(ctx context.Context, approval bson.M) (bson.M, e
 			"nextGateways":        nextGateways,
 			"prevStatus":          shared.StringValue(rule["status"]),
 			"prevLastPublishedAt": shared.StringValue(rule["lastPublishedAt"]),
+			"workerTags":          requiredWorkerTags,
 		},
 		"requestedBy": requestedBy,
 		"serviceName": shared.StringValue(rule["serviceName"]),

@@ -16,19 +16,23 @@ const (
 
 type workerAvailabilityError struct {
 	Environment string
+	Tags        []string
 }
 
 func (e workerAvailabilityError) Error() string {
-	return shared.WorkerUnavailableMessage(e.Environment)
+	return shared.WorkerUnavailableMessageWithTags(e.Environment, e.Tags)
 }
 
-func ensureActiveWorkerForEnvironment(ctx context.Context, environment string) error {
-	active, err := shared.HasActiveWorkerForEnvironment(ctx, environment)
+func ensureActiveWorkerForEnvironment(ctx context.Context, environment string, requiredTags []string) error {
+	active, err := shared.HasActiveWorkerForEnvironmentAndTags(ctx, environment, requiredTags)
 	if err != nil {
 		return err
 	}
 	if !active {
-		return workerAvailabilityError{Environment: shared.NormalizeOperationEnvironment(environment)}
+		return workerAvailabilityError{
+			Environment: shared.NormalizeOperationEnvironment(environment),
+			Tags:        shared.NormalizeWorkerTags(requiredTags),
+		}
 	}
 	return nil
 }
@@ -38,19 +42,21 @@ func isWorkerAvailabilityError(err error) bool {
 	return errors.As(err, &availabilityErr)
 }
 
-func respondWorkerAvailabilityError(c *gin.Context, environment string) {
+func respondWorkerAvailabilityError(c *gin.Context, environment string, requiredTags []string) {
 	normalizedEnvironment := shared.NormalizeOperationEnvironment(environment)
+	normalizedTags := shared.NormalizeWorkerTags(requiredTags)
 	c.JSON(http.StatusConflict, gin.H{
-		"message":     shared.WorkerUnavailableMessage(normalizedEnvironment),
+		"message":     shared.WorkerUnavailableMessageWithTags(normalizedEnvironment, normalizedTags),
 		"code":        workerAvailabilityErrorCode,
 		"environment": normalizedEnvironment,
+		"workerTags":  normalizedTags,
 	})
 }
 
-func ensureWorkerAvailabilityOrRespond(c *gin.Context, ctx context.Context, environment string) bool {
-	if err := ensureActiveWorkerForEnvironment(ctx, environment); err != nil {
+func ensureWorkerAvailabilityOrRespond(c *gin.Context, ctx context.Context, environment string, requiredTags []string) bool {
+	if err := ensureActiveWorkerForEnvironment(ctx, environment, requiredTags); err != nil {
 		if isWorkerAvailabilityError(err) {
-			respondWorkerAvailabilityError(c, environment)
+			respondWorkerAvailabilityError(c, environment, requiredTags)
 			return false
 		}
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to validate worker availability")

@@ -3,6 +3,9 @@ package shared
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/google/uuid"
@@ -57,6 +60,10 @@ func LoadGovernanceSettings(ctx context.Context) (bson.M, error) {
 				"environments": []string{"prod"},
 				"minApprovers": 1,
 			},
+			"deployPolicy": bson.M{
+				"enabled": false,
+				"rules":   []interface{}{},
+			},
 			"rulePublishApproval": bson.M{
 				"enabled":      false,
 				"externalOnly": false,
@@ -66,6 +73,439 @@ func LoadGovernanceSettings(ctx context.Context) (bson.M, error) {
 		}, nil
 	}
 	return nil, err
+}
+
+type GovernanceDeployPolicyViolation struct {
+	Code        string                 `json:"code"`
+	Environment string                 `json:"environment"`
+	Message     string                 `json:"message"`
+	Rule        map[string]interface{} `json:"rule,omitempty"`
+}
+
+type GovernanceDeployPolicyTarget struct {
+	ProfileID        string `json:"profileId,omitempty"`
+	SCMProvider      string `json:"scmProvider,omitempty"`
+	RegistryProvider string `json:"registryProvider,omitempty"`
+	SecretProvider   string `json:"secretProvider,omitempty"`
+}
+
+func normalizeDeployStrategy(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "rolling", "canary", "blue-green":
+		return normalized
+	default:
+		return ""
+	}
+}
+
+func normalizeDeploySourceType(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "git", "registry":
+		return normalized
+	default:
+		return ""
+	}
+}
+
+func normalizePolicyIdentifier(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func NormalizeRegistryHost(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+	if strings.Contains(value, "://") {
+		if parsed, err := url.Parse(value); err == nil {
+			value = parsed.Host
+		}
+	}
+	value = strings.TrimSuffix(value, "/v1/")
+	value = strings.TrimSuffix(value, "/")
+	if strings.Contains(value, "/") {
+		return ""
+	}
+	if value == "index.docker.io" {
+		return "docker.io"
+	}
+	return value
+}
+
+func NormalizeDeployPolicyRules(raw interface{}) []bson.M {
+	items := ToInterfaceSlice(raw)
+	if len(items) == 0 {
+		return []bson.M{}
+	}
+
+	normalizedByEnvironment := map[string]bson.M{}
+	order := make([]string, 0, len(items))
+	for _, item := range items {
+		rule := MapPayload(item)
+		environment := NormalizeOperationEnvironment(StringValue(rule["environment"]))
+		if environment == "" {
+			continue
+		}
+
+		seenStrategies := map[string]struct{}{}
+		allowedStrategies := make([]string, 0)
+		for _, strategy := range ToStringSlice(rule["allowedStrategies"]) {
+			normalizedStrategy := normalizeDeployStrategy(strategy)
+			if normalizedStrategy == "" {
+				continue
+			}
+			if _, exists := seenStrategies[normalizedStrategy]; exists {
+				continue
+			}
+			seenStrategies[normalizedStrategy] = struct{}{}
+			allowedStrategies = append(allowedStrategies, normalizedStrategy)
+		}
+		sort.Strings(allowedStrategies)
+
+		seenSourceTypes := map[string]struct{}{}
+		allowedSourceTypes := make([]string, 0)
+		for _, sourceType := range ToStringSlice(rule["allowedSourceTypes"]) {
+			normalizedSourceType := normalizeDeploySourceType(sourceType)
+			if normalizedSourceType == "" {
+				continue
+			}
+			if _, exists := seenSourceTypes[normalizedSourceType]; exists {
+				continue
+			}
+			seenSourceTypes[normalizedSourceType] = struct{}{}
+			allowedSourceTypes = append(allowedSourceTypes, normalizedSourceType)
+		}
+		sort.Strings(allowedSourceTypes)
+
+		allowedProfileIDs := normalizePolicyIdentifierList(ToStringSlice(rule["allowedProfileIds"]))
+		allowedSCMProviders := normalizePolicyIdentifierList(ToStringSlice(rule["allowedScmProviders"]))
+		allowedRegistryProviders := normalizePolicyIdentifierList(ToStringSlice(rule["allowedRegistryProviders"]))
+		allowedSecretProviders := normalizePolicyIdentifierList(ToStringSlice(rule["allowedSecretProviders"]))
+
+		seenRegistries := map[string]struct{}{}
+		allowedRegistries := make([]string, 0)
+		for _, registryHost := range ToStringSlice(rule["allowedRegistries"]) {
+			normalizedRegistryHost := NormalizeRegistryHost(registryHost)
+			if normalizedRegistryHost == "" {
+				continue
+			}
+			if _, exists := seenRegistries[normalizedRegistryHost]; exists {
+				continue
+			}
+			seenRegistries[normalizedRegistryHost] = struct{}{}
+			allowedRegistries = append(allowedRegistries, normalizedRegistryHost)
+		}
+		sort.Strings(allowedRegistries)
+
+		maxReplicas := IntValue(rule["maxReplicas"])
+		if maxReplicas < 0 {
+			maxReplicas = 0
+		}
+
+		normalizedByEnvironment[environment] = bson.M{
+			"environment":              environment,
+			"allowAutoDeploy":          BoolValue(rule["allowAutoDeploy"]),
+			"requireExplicitVersion":   BoolValue(rule["requireExplicitVersion"]),
+			"blockExternalExposure":    BoolValue(rule["blockExternalExposure"]),
+			"allowedProfileIds":        allowedProfileIDs,
+			"allowedScmProviders":      allowedSCMProviders,
+			"allowedRegistryProviders": allowedRegistryProviders,
+			"allowedSecretProviders":   allowedSecretProviders,
+			"allowedSourceTypes":       allowedSourceTypes,
+			"allowedRegistries":        allowedRegistries,
+			"allowedStrategies":        allowedStrategies,
+			"maxReplicas":              maxReplicas,
+		}
+		if !containsString(order, environment) {
+			order = append(order, environment)
+		}
+	}
+
+	sort.Strings(order)
+	result := make([]bson.M, 0, len(order))
+	for _, environment := range order {
+		if rule, ok := normalizedByEnvironment[environment]; ok {
+			result = append(result, rule)
+		}
+	}
+	return result
+}
+
+func normalizePolicyIdentifierList(values []string) []string {
+	if len(values) == 0 {
+		return []string{}
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := normalizePolicyIdentifier(value)
+		if normalized == "" {
+			continue
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func EvaluateDeployPolicy(
+	settings bson.M,
+	environment,
+	trigger,
+	strategyType,
+	sourceType,
+	registryHost string,
+	replicas int,
+	explicitVersion bool,
+	target GovernanceDeployPolicyTarget,
+) []GovernanceDeployPolicyViolation {
+	config := MapPayload(settings["deployPolicy"])
+	if !BoolValue(config["enabled"]) {
+		return nil
+	}
+
+	targetEnvironment := NormalizeOperationEnvironment(environment)
+	if targetEnvironment == "" {
+		return nil
+	}
+	normalizedTrigger := strings.ToLower(strings.TrimSpace(trigger))
+	normalizedStrategy := normalizeDeployStrategy(strategyType)
+	normalizedSourceType := normalizeDeploySourceType(sourceType)
+	normalizedRegistryHost := NormalizeRegistryHost(registryHost)
+	normalizedProfileID := normalizePolicyIdentifier(target.ProfileID)
+	normalizedSCMProvider := normalizePolicyIdentifier(target.SCMProvider)
+	normalizedRegistryProvider := normalizePolicyIdentifier(target.RegistryProvider)
+	normalizedSecretProvider := normalizePolicyIdentifier(target.SecretProvider)
+	if replicas < 0 {
+		replicas = 0
+	}
+
+	violations := make([]GovernanceDeployPolicyViolation, 0)
+	for _, item := range NormalizeDeployPolicyRules(config["rules"]) {
+		ruleEnvironment := NormalizeOperationEnvironment(StringValue(item["environment"]))
+		if ruleEnvironment == "" || ruleEnvironment != targetEnvironment {
+			continue
+		}
+
+		allowAutoDeploy := BoolValue(item["allowAutoDeploy"])
+		requireExplicitVersion := BoolValue(item["requireExplicitVersion"])
+		allowedProfileIDs := ToStringSlice(item["allowedProfileIds"])
+		allowedSCMProviders := ToStringSlice(item["allowedScmProviders"])
+		allowedRegistryProviders := ToStringSlice(item["allowedRegistryProviders"])
+		allowedSecretProviders := ToStringSlice(item["allowedSecretProviders"])
+		allowedSourceTypes := ToStringSlice(item["allowedSourceTypes"])
+		allowedRegistries := ToStringSlice(item["allowedRegistries"])
+		allowedStrategies := ToStringSlice(item["allowedStrategies"])
+		maxReplicas := IntValue(item["maxReplicas"])
+
+		if normalizedTrigger == "auto" && !allowAutoDeploy {
+			violations = append(violations, GovernanceDeployPolicyViolation{
+				Code:        "auto-deploy-disabled",
+				Environment: targetEnvironment,
+				Message:     fmt.Sprintf("Auto deploy is disabled by policy for environment %s.", targetEnvironment),
+				Rule:        item,
+			})
+		}
+		if requireExplicitVersion && !explicitVersion {
+			violations = append(violations, GovernanceDeployPolicyViolation{
+				Code:        "explicit-version-required",
+				Environment: targetEnvironment,
+				Message:     fmt.Sprintf("An explicit version is required by policy for environment %s.", targetEnvironment),
+				Rule:        item,
+			})
+		}
+		if len(allowedProfileIDs) > 0 {
+			if normalizedProfileID == "" {
+				violations = append(violations, GovernanceDeployPolicyViolation{
+					Code:        "runtime-profile-unresolved",
+					Environment: targetEnvironment,
+					Message:     fmt.Sprintf("A runtime profile is required by policy for environment %s.", targetEnvironment),
+					Rule:        item,
+				})
+			} else if !containsNormalizedValue(allowedProfileIDs, normalizedProfileID) {
+				violations = append(violations, GovernanceDeployPolicyViolation{
+					Code:        "runtime-profile-not-allowed",
+					Environment: targetEnvironment,
+					Message:     fmt.Sprintf("Runtime profile %s is not allowed by policy for environment %s.", normalizedProfileID, targetEnvironment),
+					Rule:        item,
+				})
+			}
+		}
+		if len(allowedSCMProviders) > 0 && normalizedSourceType == "git" {
+			if normalizedSCMProvider == "" {
+				violations = append(violations, GovernanceDeployPolicyViolation{
+					Code:        "scm-provider-unresolved",
+					Environment: targetEnvironment,
+					Message:     fmt.Sprintf("SCM provider could not be resolved for environment %s, but policy requires an allowed SCM provider.", targetEnvironment),
+					Rule:        item,
+				})
+			} else if !containsNormalizedValue(allowedSCMProviders, normalizedSCMProvider) {
+				violations = append(violations, GovernanceDeployPolicyViolation{
+					Code:        "scm-provider-not-allowed",
+					Environment: targetEnvironment,
+					Message:     fmt.Sprintf("SCM provider %s is not allowed by policy for environment %s.", normalizedSCMProvider, targetEnvironment),
+					Rule:        item,
+				})
+			}
+		}
+		if len(allowedRegistryProviders) > 0 && normalizedSourceType == "registry" {
+			if normalizedRegistryProvider == "" {
+				violations = append(violations, GovernanceDeployPolicyViolation{
+					Code:        "registry-provider-unresolved",
+					Environment: targetEnvironment,
+					Message:     fmt.Sprintf("Registry provider could not be resolved for environment %s, but policy requires an allowed registry provider.", targetEnvironment),
+					Rule:        item,
+				})
+			} else if !containsNormalizedValue(allowedRegistryProviders, normalizedRegistryProvider) {
+				violations = append(violations, GovernanceDeployPolicyViolation{
+					Code:        "registry-provider-not-allowed",
+					Environment: targetEnvironment,
+					Message:     fmt.Sprintf("Registry provider %s is not allowed by policy for environment %s.", normalizedRegistryProvider, targetEnvironment),
+					Rule:        item,
+				})
+			}
+		}
+		if len(allowedSecretProviders) > 0 {
+			if normalizedSecretProvider == "" {
+				violations = append(violations, GovernanceDeployPolicyViolation{
+					Code:        "secret-provider-unresolved",
+					Environment: targetEnvironment,
+					Message:     fmt.Sprintf("Secret provider could not be resolved for environment %s, but policy requires an allowed secret provider.", targetEnvironment),
+					Rule:        item,
+				})
+			} else if !containsNormalizedValue(allowedSecretProviders, normalizedSecretProvider) {
+				violations = append(violations, GovernanceDeployPolicyViolation{
+					Code:        "secret-provider-not-allowed",
+					Environment: targetEnvironment,
+					Message:     fmt.Sprintf("Secret provider %s is not allowed by policy for environment %s.", normalizedSecretProvider, targetEnvironment),
+					Rule:        item,
+				})
+			}
+		}
+		if len(allowedSourceTypes) > 0 && normalizedSourceType != "" {
+			allowed := false
+			for _, candidate := range allowedSourceTypes {
+				if normalizeDeploySourceType(candidate) == normalizedSourceType {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				violations = append(violations, GovernanceDeployPolicyViolation{
+					Code:        "source-type-not-allowed",
+					Environment: targetEnvironment,
+					Message:     fmt.Sprintf("Source type %s is not allowed by policy for environment %s.", normalizedSourceType, targetEnvironment),
+					Rule:        item,
+				})
+			}
+		}
+		if len(allowedRegistries) > 0 {
+			if normalizedRegistryHost == "" {
+				violations = append(violations, GovernanceDeployPolicyViolation{
+					Code:        "registry-host-unresolved",
+					Environment: targetEnvironment,
+					Message:     fmt.Sprintf("Registry host could not be resolved for environment %s, but policy requires an allowed registry.", targetEnvironment),
+					Rule:        item,
+				})
+			} else {
+				allowed := false
+				for _, candidate := range allowedRegistries {
+					if NormalizeRegistryHost(candidate) == normalizedRegistryHost {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
+					violations = append(violations, GovernanceDeployPolicyViolation{
+						Code:        "registry-not-allowed",
+						Environment: targetEnvironment,
+						Message:     fmt.Sprintf("Registry %s is not allowed by policy for environment %s.", normalizedRegistryHost, targetEnvironment),
+						Rule:        item,
+					})
+				}
+			}
+		}
+		if len(allowedStrategies) > 0 && normalizedStrategy != "" {
+			allowed := false
+			for _, candidate := range allowedStrategies {
+				if normalizeDeployStrategy(candidate) == normalizedStrategy {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				violations = append(violations, GovernanceDeployPolicyViolation{
+					Code:        "strategy-not-allowed",
+					Environment: targetEnvironment,
+					Message:     fmt.Sprintf("Strategy %s is not allowed by policy for environment %s.", normalizedStrategy, targetEnvironment),
+					Rule:        item,
+				})
+			}
+		}
+		if maxReplicas > 0 && replicas > maxReplicas {
+			violations = append(violations, GovernanceDeployPolicyViolation{
+				Code:        "max-replicas-exceeded",
+				Environment: targetEnvironment,
+				Message:     fmt.Sprintf("Requested deploy uses %d replicas, which exceeds the policy limit of %d for environment %s.", replicas, maxReplicas, targetEnvironment),
+				Rule:        item,
+			})
+		}
+	}
+	return violations
+}
+
+func containsNormalizedValue(values []string, target string) bool {
+	for _, candidate := range values {
+		if normalizePolicyIdentifier(candidate) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func EvaluateExternalExposurePolicy(settings bson.M, environment string, external bool) []GovernanceDeployPolicyViolation {
+	config := MapPayload(settings["deployPolicy"])
+	if !BoolValue(config["enabled"]) || !external {
+		return nil
+	}
+
+	targetEnvironment := NormalizeOperationEnvironment(environment)
+	if targetEnvironment == "" {
+		return nil
+	}
+
+	violations := make([]GovernanceDeployPolicyViolation, 0)
+	for _, item := range NormalizeDeployPolicyRules(config["rules"]) {
+		ruleEnvironment := NormalizeOperationEnvironment(StringValue(item["environment"]))
+		if ruleEnvironment == "" || ruleEnvironment != targetEnvironment {
+			continue
+		}
+
+		if BoolValue(item["blockExternalExposure"]) {
+			violations = append(violations, GovernanceDeployPolicyViolation{
+				Code:        "external-exposure-disabled",
+				Environment: targetEnvironment,
+				Message:     fmt.Sprintf("External exposure is blocked by policy for environment %s.", targetEnvironment),
+				Rule:        item,
+			})
+		}
+	}
+	return violations
+}
+
+func containsString(items []string, target string) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
 }
 
 func DeployApprovalRequired(settings bson.M, environment string) (bool, int) {

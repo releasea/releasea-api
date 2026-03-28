@@ -10,11 +10,15 @@ import (
 
 	deploys "releaseaapi/internal/features/deploys/api"
 	operations "releaseaapi/internal/features/operations/api"
+	registryproviders "releaseaapi/internal/platform/providers/registry"
+	scmproviders "releaseaapi/internal/platform/providers/scm"
+	secretsproviders "releaseaapi/internal/platform/providers/secrets"
 	"releaseaapi/internal/platform/shared"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
@@ -34,6 +38,70 @@ type deployResolution struct {
 	Branch  string
 	Version string
 	Image   string
+}
+
+type deployPolicyEvaluationResult struct {
+	Environment     string                                   `json:"environment"`
+	Trigger         string                                   `json:"trigger"`
+	SourceType      string                                   `json:"sourceType"`
+	RegistryHost    string                                   `json:"registryHost,omitempty"`
+	StrategyType    string                                   `json:"strategyType"`
+	Replicas        int                                      `json:"replicas"`
+	ExplicitVersion bool                                     `json:"explicitVersion"`
+	Target          shared.GovernanceDeployPolicyTarget      `json:"target"`
+	Violations      []shared.GovernanceDeployPolicyViolation `json:"violations"`
+}
+
+var loadGovernanceSettings = shared.LoadGovernanceSettings
+var recordGovernancePolicyBlockAudit = func(
+	ctx context.Context,
+	serviceID string,
+	serviceName string,
+	performedBy bson.M,
+	details bson.M,
+) {
+	auditID := "gaudit-" + uuid.NewString()
+	doc := bson.M{
+		"_id":          auditID,
+		"id":           auditID,
+		"action":       "governance.deploy_policy.blocked",
+		"resourceType": "deploy",
+		"resourceId":   serviceID,
+		"resourceName": serviceName,
+		"performedBy":  performedBy,
+		"performedAt":  shared.NowISO(),
+		"details":      details,
+	}
+	_ = shared.InsertOne(ctx, shared.Collection(shared.GovernanceAuditCollection), doc)
+}
+
+func recordPlatformDeployAudit(
+	ctx context.Context,
+	c *gin.Context,
+	action string,
+	resourceID string,
+	status string,
+	metadata map[string]interface{},
+) {
+	actorID, actorName, actorRole := shared.AuditActorFromContext(c)
+	shared.RecordAuditEvent(ctx, shared.AuditEvent{
+		Action:       action,
+		ResourceType: "deploy",
+		ResourceID:   resourceID,
+		Status:       status,
+		ActorID:      actorID,
+		ActorName:    actorName,
+		ActorRole:    actorRole,
+		Metadata:     metadata,
+	})
+}
+
+func resolvePerformedByForGovernanceAudit(c *gin.Context) bson.M {
+	return bson.M{
+		"id":    strings.TrimSpace(c.GetString("authUserId")),
+		"name":  strings.TrimSpace(shared.AuthDisplayName(c)),
+		"email": strings.TrimSpace(c.GetString("authEmail")),
+	}
 }
 
 func parseCreateDeployRequest(c *gin.Context) (createDeployRequest, bool) {
@@ -381,6 +449,233 @@ func resolveDeployServiceName(serviceID string, service bson.M) string {
 	return serviceName
 }
 
+func resolveServiceDeployReplicaTarget(service bson.M) int {
+	replicas := shared.IntValue(service["replicas"])
+	if replicas <= 0 {
+		replicas = shared.IntValue(service["minReplicas"])
+	}
+	if replicas <= 0 {
+		replicas = 1
+	}
+	return replicas
+}
+
+func maybeRespondDeployPolicyBlocked(
+	c *gin.Context,
+	ctx context.Context,
+	serviceID string,
+	serviceName string,
+	service bson.M,
+	environment string,
+	trigger string,
+	sourceType string,
+	registryHost string,
+	strategyType string,
+	replicas int,
+	explicitVersion bool,
+) bool {
+	evaluation, err := evaluateDeployPolicyWithResolvedInputs(
+		ctx,
+		service,
+		environment,
+		trigger,
+		sourceType,
+		registryHost,
+		strategyType,
+		replicas,
+		explicitVersion,
+	)
+	if err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to resolve deploy policy context")
+		return true
+	}
+	if len(evaluation.Violations) == 0 {
+		return false
+	}
+
+	recordGovernancePolicyBlockAudit(ctx, serviceID, serviceName, resolvePerformedByForGovernanceAudit(c), bson.M{
+		"environment":     evaluation.Environment,
+		"trigger":         evaluation.Trigger,
+		"sourceType":      evaluation.SourceType,
+		"registryHost":    evaluation.RegistryHost,
+		"strategyType":    evaluation.StrategyType,
+		"replicas":        evaluation.Replicas,
+		"explicitVersion": evaluation.ExplicitVersion,
+		"target":          evaluation.Target,
+		"violations":      evaluation.Violations,
+	})
+
+	c.JSON(http.StatusConflict, gin.H{
+		"queued":     false,
+		"code":       "GOVERNANCE_DEPLOY_POLICY_VIOLATION",
+		"message":    evaluation.Violations[0].Message,
+		"violations": evaluation.Violations,
+	})
+	return true
+}
+
+func evaluateDeployPolicyWithResolvedInputs(
+	ctx context.Context,
+	service bson.M,
+	environment string,
+	trigger string,
+	sourceType string,
+	registryHost string,
+	strategyType string,
+	replicas int,
+	explicitVersion bool,
+) (deployPolicyEvaluationResult, error) {
+	result := deployPolicyEvaluationResult{
+		Environment:     environment,
+		Trigger:         trigger,
+		SourceType:      sourceType,
+		RegistryHost:    registryHost,
+		StrategyType:    strategyType,
+		Replicas:        replicas,
+		ExplicitVersion: explicitVersion,
+		Violations:      []shared.GovernanceDeployPolicyViolation{},
+	}
+
+	settings, err := loadGovernanceSettings(ctx)
+	if err != nil {
+		return result, err
+	}
+	target, err := resolveDeployPolicyTarget(ctx, service, sourceType)
+	if err != nil {
+		return result, err
+	}
+	result.Target = target
+	result.Violations = shared.EvaluateDeployPolicy(
+		settings,
+		environment,
+		trigger,
+		strategyType,
+		sourceType,
+		registryHost,
+		replicas,
+		explicitVersion,
+		target,
+	)
+	return result, nil
+}
+
+func resolveDeployPolicyTarget(ctx context.Context, service bson.M, sourceType string) (shared.GovernanceDeployPolicyTarget, error) {
+	target := shared.GovernanceDeployPolicyTarget{
+		ProfileID: strings.TrimSpace(shared.StringValue(service["profileId"])),
+	}
+
+	project, err := resolveDeployPolicyProject(ctx, service)
+	if err != nil {
+		return target, err
+	}
+
+	if normalizeServiceSourceType(sourceType) == "git" {
+		scmCredential, err := resolveDeployPolicyCredential(
+			ctx,
+			shared.ScmCredentialsCollection,
+			strings.TrimSpace(shared.StringValue(service["scmCredentialId"])),
+			strings.TrimSpace(shared.StringValue(project["scmCredentialId"])),
+		)
+		if err != nil {
+			return target, err
+		}
+		if len(scmCredential) > 0 {
+			target.SCMProvider = scmproviders.Normalize(shared.StringValue(scmCredential["provider"]))
+		}
+	}
+
+	if normalizeServiceSourceType(sourceType) == "registry" {
+		registryCredential, err := resolveDeployPolicyCredential(
+			ctx,
+			shared.RegistryCredentialsCollection,
+			strings.TrimSpace(shared.StringValue(service["registryCredentialId"])),
+			strings.TrimSpace(shared.StringValue(project["registryCredentialId"])),
+		)
+		if err != nil {
+			return target, err
+		}
+		if len(registryCredential) > 0 {
+			target.RegistryProvider = registryproviders.Normalize(shared.StringValue(registryCredential["provider"]))
+		}
+	}
+
+	if serviceUsesSecretRefs(service) {
+		secretProvider, err := deploys.ResolveSecretProvider(ctx, service)
+		if err != nil {
+			return target, err
+		}
+		if len(secretProvider) > 0 {
+			target.SecretProvider = secretsproviders.Normalize(shared.StringValue(secretProvider["type"]))
+		}
+	}
+
+	return target, nil
+}
+
+func resolveDeployPolicyProject(ctx context.Context, service bson.M) (bson.M, error) {
+	projectID := strings.TrimSpace(shared.StringValue(service["projectId"]))
+	if projectID == "" {
+		return bson.M{}, nil
+	}
+	project, err := shared.FindOne(ctx, shared.Collection(shared.ProjectsCollection), bson.M{"id": projectID})
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return bson.M{}, nil
+	}
+	return project, err
+}
+
+func resolveDeployPolicyCredential(ctx context.Context, collectionName, serviceCredentialID, projectCredentialID string) (bson.M, error) {
+	if credential, found, err := resolveDeployPolicyCredentialByIDOrLegacyObjectID(ctx, collectionName, serviceCredentialID); err != nil {
+		return nil, err
+	} else if found {
+		return credential, nil
+	}
+	if credential, found, err := resolveDeployPolicyCredentialByIDOrLegacyObjectID(ctx, collectionName, projectCredentialID); err != nil {
+		return nil, err
+	} else if found {
+		return credential, nil
+	}
+	credential, err := shared.FindLatestPlatformCredential(ctx, collectionName)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return bson.M{}, nil
+	}
+	return credential, err
+}
+
+func resolveDeployPolicyCredentialByIDOrLegacyObjectID(ctx context.Context, collectionName, credentialID string) (bson.M, bool, error) {
+	credentialID = strings.TrimSpace(credentialID)
+	if credentialID == "" {
+		return nil, false, nil
+	}
+
+	orFilters := []bson.M{
+		{"id": credentialID},
+		{"_id": credentialID},
+	}
+	if objectID, err := primitive.ObjectIDFromHex(credentialID); err == nil {
+		orFilters = append(orFilters, bson.M{"_id": objectID})
+	}
+
+	document, err := shared.FindOne(ctx, shared.Collection(collectionName), bson.M{"$or": orFilters})
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return document, true, nil
+}
+
+func serviceUsesSecretRefs(service bson.M) bool {
+	environment := shared.MapPayload(service["environment"])
+	for _, raw := range environment {
+		if secretsproviders.IsSecretRef(shared.StringValue(raw)) {
+			return true
+		}
+	}
+	return false
+}
+
 func maybeRespondDeployApprovalRequired(
 	c *gin.Context,
 	ctx context.Context,
@@ -389,10 +684,11 @@ func maybeRespondDeployApprovalRequired(
 	serviceName string,
 	triggeredBy string,
 	strategyType string,
+	workerTags []string,
 	resources []map[string]interface{},
 	resourcesYAML string,
 ) bool {
-	settings, err := shared.LoadGovernanceSettings(ctx)
+	settings, err := loadGovernanceSettings(ctx)
 	if err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to load governance settings")
 		return true
@@ -402,7 +698,7 @@ func maybeRespondDeployApprovalRequired(
 		return false
 	}
 
-	metadata := buildDeployApprovalMetadata(request, resolution, serviceName, triggeredBy, strategyType, resources, resourcesYAML)
+	metadata := buildDeployApprovalMetadata(request, resolution, serviceName, triggeredBy, strategyType, workerTags, resources, resourcesYAML)
 	requestedBy := buildDeployApprovalRequestedBy(c, triggeredBy)
 
 	approvalDoc, existing, approvalErr := shared.CreateOrGetPendingGovernanceApproval(ctx, shared.GovernanceApprovalCreateParams{
@@ -440,9 +736,11 @@ func buildDeployApprovalMetadata(
 	serviceName string,
 	triggeredBy string,
 	strategyType string,
+	workerTags []string,
 	resources []map[string]interface{},
 	resourcesYAML string,
 ) map[string]interface{} {
+	normalizedWorkerTags := shared.NormalizeWorkerTags(workerTags)
 	action := map[string]interface{}{
 		"kind":          operations.OperationTypeServiceDeploy,
 		"serviceId":     request.ServiceID,
@@ -457,6 +755,9 @@ func buildDeployApprovalMetadata(
 		"resources":     resources,
 		"resourcesYaml": resourcesYAML,
 	}
+	if len(normalizedWorkerTags) > 0 {
+		action["workerTags"] = normalizedWorkerTags
+	}
 
 	metadata := map[string]interface{}{
 		"version":     resolution.Version,
@@ -467,6 +768,9 @@ func buildDeployApprovalMetadata(
 		"serviceName": serviceName,
 		"trigger":     request.Trigger,
 		"action":      action,
+	}
+	if len(normalizedWorkerTags) > 0 {
+		metadata["workerTags"] = normalizedWorkerTags
 	}
 	if resolution.Image != "" {
 		metadata["image"] = resolution.Image
@@ -525,6 +829,7 @@ func persistDeployOperationRecord(
 	request createDeployRequest,
 	resolution deployResolution,
 	strategyType string,
+	workerTags []string,
 	serviceName string,
 	triggeredBy string,
 	deployID string,
@@ -557,6 +862,9 @@ func persistDeployOperationRecord(
 	opPayload := shared.MapPayload(opDoc["payload"])
 	if resolution.Image != "" {
 		opPayload["image"] = resolution.Image
+	}
+	if normalizedWorkerTags := shared.NormalizeWorkerTags(workerTags); len(normalizedWorkerTags) > 0 {
+		opPayload["workerTags"] = normalizedWorkerTags
 	}
 	opPayload["resources"] = resources
 	if resourcesYAML != "" {
@@ -624,6 +932,7 @@ func persistPromoteCanaryOperation(
 	ctx context.Context,
 	serviceID string,
 	environment string,
+	workerTags []string,
 	serviceName string,
 	requestedBy string,
 	now string,
@@ -643,6 +952,9 @@ func persistPromoteCanaryOperation(
 		},
 		"requestedBy": requestedBy,
 		"serviceName": serviceName,
+	}
+	if normalizedWorkerTags := shared.NormalizeWorkerTags(workerTags); len(normalizedWorkerTags) > 0 {
+		shared.MapPayload(opDoc["payload"])["workerTags"] = normalizedWorkerTags
 	}
 
 	if err := shared.InsertOne(ctx, shared.Collection(shared.OperationsCollection), opDoc); err != nil {

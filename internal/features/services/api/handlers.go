@@ -180,6 +180,7 @@ func CreateService(c *gin.Context) {
 		}
 		payload["managementMode"] = normalized
 	}
+	normalizeServiceAutoDeployEnvironmentPayload(payload)
 	normalizeServiceWorkerTagsPayload(payload)
 	normalizeServiceWorkerRoutingPreferencesPayload(payload)
 
@@ -219,6 +220,10 @@ func CreateService(c *gin.Context) {
 	}
 	if normalizeServiceManagementMode(shared.StringValue(payload["managementMode"])) == "observed" {
 		payload["autoDeploy"] = false
+		payload["autoDeployEnvironment"] = ""
+	}
+	if autoDeploy, ok := payload["autoDeploy"]; ok && !shared.BoolValue(autoDeploy) {
+		payload["autoDeployEnvironment"] = ""
 	}
 	if _, ok := payload["pauseOnIdle"]; !ok {
 		payload["pauseOnIdle"] = false
@@ -301,6 +306,7 @@ func UpdateService(c *gin.Context) {
 		}
 		payload["managementMode"] = normalized
 	}
+	normalizeServiceAutoDeployEnvironmentPayload(payload)
 	normalizeServiceWorkerTagsPayload(payload)
 	normalizeServiceWorkerRoutingPreferencesPayload(payload)
 	if _, ok := payload["deployTemplateId"]; !ok {
@@ -335,6 +341,10 @@ func UpdateService(c *gin.Context) {
 	delete(payload, "scaleEnvironment")
 	if normalizeServiceManagementMode(shared.StringValue(payload["managementMode"])) == "observed" {
 		payload["autoDeploy"] = false
+		payload["autoDeployEnvironment"] = ""
+	}
+	if autoDeploy, ok := payload["autoDeploy"]; ok && !shared.BoolValue(autoDeploy) {
+		payload["autoDeployEnvironment"] = ""
 	}
 	if blockedFields := detectObservedRestrictedMutationFields(existing, payload, strategyPayloadProvided, nextStrategy, scheduleChanged); len(blockedFields) > 0 {
 		c.JSON(http.StatusConflict, gin.H{

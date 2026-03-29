@@ -356,6 +356,19 @@ func normalizeServiceManagementMode(mode string) string {
 	}
 }
 
+func normalizeServiceAutoDeployEnvironmentPayload(payload bson.M) {
+	raw, ok := payload["autoDeployEnvironment"]
+	if !ok {
+		return
+	}
+	normalized := strings.TrimSpace(shared.StringValue(raw))
+	if normalized == "" {
+		delete(payload, "autoDeployEnvironment")
+		return
+	}
+	payload["autoDeployEnvironment"] = shared.NormalizeOperationEnvironment(normalized)
+}
+
 func isObservedService(service bson.M) bool {
 	return normalizeServiceManagementMode(shared.StringValue(service["managementMode"])) == "observed"
 }

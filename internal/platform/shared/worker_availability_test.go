@@ -95,3 +95,15 @@ func TestWorkerSatisfiesEnvironmentAndTags(t *testing.T) {
 		t.Fatalf("expected worker to fail missing tags")
 	}
 }
+
+func TestWorkerPoolIDFromWorker(t *testing.T) {
+	worker := bson.M{
+		"environment":     "prod",
+		"cluster":         "cluster-a",
+		"namespacePrefix": "releasea-apps",
+		"tags":            []string{"gpu", "prod", "gpu"},
+	}
+	if got := WorkerPoolIDFromWorker(worker); got != "prod|cluster-a|releasea-apps|gpu,prod" {
+		t.Fatalf("worker pool id = %q, want %q", got, "prod|cluster-a|releasea-apps|gpu,prod")
+	}
+}

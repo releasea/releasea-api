@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"releaseaapi/internal/platform/shared"
 
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/bson"
@@ -465,5 +468,62 @@ func TestMaybeRespondDeployPolicyBlockedAllowsCompliantRequest(t *testing.T) {
 	}
 	if recorder.Body.Len() != 0 {
 		t.Fatalf("expected no response body for allowed request, got %q", recorder.Body.String())
+	}
+}
+
+func TestMaybeRespondDeployPolicyBlockedAllowsTemporaryException(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousSettings := loadGovernanceSettings
+	previousExceptions := findDeployPolicyExceptions
+	previousBlockAudit := recordGovernancePolicyBlockAudit
+	previousDryRunAudit := recordGovernancePolicyDryRunAudit
+	previousExceptionAudit := recordGovernancePolicyExceptionAudit
+	loadGovernanceSettings = func(context.Context) (bson.M, error) {
+		return bson.M{
+			"deployPolicy": bson.M{
+				"enabled": true,
+				"rules": []interface{}{
+					bson.M{
+						"environment":            "prod",
+						"requireExplicitVersion": true,
+					},
+				},
+			},
+		}, nil
+	}
+	findDeployPolicyExceptions = func(context.Context, string, string) ([]bson.M, error) {
+		return []bson.M{
+			{
+				"id":          "gexc-1",
+				"policy":      shared.GovernanceExceptionPolicyDeploy,
+				"serviceId":   "svc-1",
+				"environment": "prod",
+				"codes":       []string{"explicit-version-required"},
+				"reason":      "Planned release cutover",
+				"expiresAt":   time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+				"createdAt":   time.Now().UTC().Format(time.RFC3339),
+			},
+		}, nil
+	}
+	recordGovernancePolicyBlockAudit = func(context.Context, string, string, bson.M, bson.M) {}
+	recordGovernancePolicyDryRunAudit = func(context.Context, string, string, bson.M, bson.M) {}
+	recordGovernancePolicyExceptionAudit = func(context.Context, string, string, bson.M, bson.M) {}
+	defer func() {
+		loadGovernanceSettings = previousSettings
+		findDeployPolicyExceptions = previousExceptions
+		recordGovernancePolicyBlockAudit = previousBlockAudit
+		recordGovernancePolicyDryRunAudit = previousDryRunAudit
+		recordGovernancePolicyExceptionAudit = previousExceptionAudit
+	}()
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+
+	blocked := maybeRespondDeployPolicyBlocked(ctx, context.Background(), "svc-1", "Checkout API", bson.M{"id": "svc-1"}, "prod", "manual", "registry", "ghcr.io", "rolling", 2, false)
+	if blocked {
+		t.Fatalf("expected temporary exception to allow request")
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("expected no response body for excepted request, got %q", recorder.Body.String())
 	}
 }

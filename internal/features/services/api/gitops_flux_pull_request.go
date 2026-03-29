@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	scmmodels "releaseaapi/internal/features/scm/models"
 	scmproviders "releaseaapi/internal/platform/providers/scm"
@@ -18,23 +17,18 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
-type gitOpsPullRequestPayload struct {
+type gitOpsFluxPullRequestPayload struct {
 	BaseBranch    string `json:"baseBranch"`
-	FilePath      string `json:"filePath"`
 	Title         string `json:"title"`
 	Body          string `json:"body"`
 	CommitMessage string `json:"commitMessage"`
 }
 
-var nowForGitOpsPullRequest = func() time.Time {
-	return time.Now().UTC()
-}
-
-var openServiceDesiredStatePullRequest = func(
+var openServiceFluxStarterPullRequest = func(
 	ctx context.Context,
 	service bson.M,
 	rules []bson.M,
-	payload gitOpsPullRequestPayload,
+	payload gitOpsFluxPullRequestPayload,
 ) (*scmmodels.DesiredStatePullRequestResponse, error) {
 	project, err := loadServiceProject(ctx, service)
 	if err != nil {
@@ -62,7 +56,7 @@ var openServiceDesiredStatePullRequest = func(
 
 	repoURL := strings.TrimSpace(shared.StringValue(service["repoUrl"]))
 	if repoURL == "" {
-		return nil, errors.New("service repository URL is required for GitOps pull requests")
+		return nil, errors.New("service repository URL is required for Flux GitOps pull requests")
 	}
 
 	exportData, err := buildServiceDesiredStateExport(service, rules)
@@ -73,27 +67,44 @@ var openServiceDesiredStatePullRequest = func(
 		return nil, serviceDesiredStateValidationError{Validation: exportData.Validation}
 	}
 
+	serviceName := shared.StringValue(service["name"])
+	baseBranch := defaultGitOpsBaseBranch(service, payload.BaseBranch)
 	request := scmmodels.DesiredStatePullRequestRequest{
 		RepoURL:       repoURL,
-		BaseBranch:    defaultGitOpsBaseBranch(service, payload.BaseBranch),
-		BranchName:    buildGitOpsBranchName(shared.StringValue(service["name"])),
-		FilePath:      defaultGitOpsFilePath(shared.StringValue(service["name"]), payload.FilePath),
+		BaseBranch:    baseBranch,
+		BranchName:    fmt.Sprintf("releasea/gitops/flux/%s-%s", sanitizeGitOpsPathSegment(serviceName), nowForGitOpsPullRequest().Format("20060102150405")),
+		FilePath:      defaultGitOpsArgoCDDesiredStateFilePath(serviceName),
 		Content:       exportData.YAML,
-		CommitMessage: defaultGitOpsCommitMessage(shared.StringValue(service["name"]), payload.CommitMessage),
-		Title:         defaultGitOpsPRTitle(shared.StringValue(service["name"]), payload.Title),
-		Body:          defaultGitOpsPRBody(service, exportData.Warnings, payload.Body),
+		CommitMessage: defaultGitOpsFluxCommitMessage(serviceName, payload.CommitMessage),
+		Title:         defaultGitOpsFluxPRTitle(serviceName, payload.Title),
+		Body:          defaultGitOpsFluxPRBody(service, exportData.Warnings, payload.Body),
+		AdditionalFiles: []scmmodels.DesiredStatePullRequestFile{
+			{
+				Path:    defaultGitOpsArgoCDKustomizationFilePath(serviceName),
+				Content: buildArgoCDStarterKustomization(service),
+			},
+			{
+				Path:    defaultGitOpsFluxGitRepositoryFilePath(serviceName),
+				Content: buildFluxStarterGitRepository(service, baseBranch),
+			},
+			{
+				Path:    defaultGitOpsFluxKustomizationFilePath(serviceName),
+				Content: buildFluxStarterKustomization(service),
+			},
+		},
 	}
+
 	return runtime.CreateDesiredStatePullRequest(ctx, token, request)
 }
 
-func CreateServiceGitOpsPullRequest(c *gin.Context) {
+func CreateServiceFluxGitOpsPullRequest(c *gin.Context) {
 	serviceID := strings.TrimSpace(c.Param("id"))
 	if serviceID == "" {
 		shared.RespondError(c, http.StatusBadRequest, "Service ID required")
 		return
 	}
 
-	var payload gitOpsPullRequestPayload
+	var payload gitOpsFluxPullRequestPayload
 	if err := c.ShouldBindJSON(&payload); err != nil && !errors.Is(err, io.EOF) {
 		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
 		return
@@ -113,13 +124,13 @@ func CreateServiceGitOpsPullRequest(c *gin.Context) {
 	}
 	if isObservedService(service) {
 		c.JSON(http.StatusConflict, gin.H{
-			"message": "GitOps pull request delivery is only available for managed services.",
+			"message": "Flux GitOps pull request delivery is only available for managed services.",
 			"code":    "SERVICE_OBSERVED_MODE",
 		})
 		return
 	}
 	if strings.TrimSpace(shared.StringValue(service["repoUrl"])) == "" {
-		shared.RespondError(c, http.StatusBadRequest, "Service repository URL is required for GitOps pull requests")
+		shared.RespondError(c, http.StatusBadRequest, "Service repository URL is required for Flux GitOps pull requests")
 		return
 	}
 	if err := ensureGitOpsRepositoryPolicyReady(ctx, service); err != nil {
@@ -142,7 +153,7 @@ func CreateServiceGitOpsPullRequest(c *gin.Context) {
 		return
 	}
 
-	pr, err := openServiceDesiredStatePullRequest(ctx, service, rules, payload)
+	pr, err := openServiceFluxStarterPullRequest(ctx, service, rules, payload)
 	if err != nil {
 		var validationErr serviceDesiredStateValidationError
 		if errors.As(err, &validationErr) {
@@ -159,7 +170,7 @@ func CreateServiceGitOpsPullRequest(c *gin.Context) {
 
 	actorID, actorName, actorRole := shared.AuditActorFromContext(c)
 	shared.RecordAuditEvent(ctx, shared.AuditEvent{
-		Action:       "service.gitops_pr.create",
+		Action:       "service.gitops_flux_pr.create",
 		ResourceType: "service",
 		ResourceID:   serviceID,
 		ActorID:      actorID,
@@ -170,87 +181,57 @@ func CreateServiceGitOpsPullRequest(c *gin.Context) {
 			"url":        pr.URL,
 			"baseBranch": pr.BaseBranch,
 			"branchName": pr.BranchName,
-			"filePath":   pr.FilePath,
+			"filePaths":  pr.FilePaths,
 		},
 	})
 
 	c.JSON(http.StatusOK, pr)
 }
-func defaultGitOpsBaseBranch(service bson.M, override string) string {
-	baseBranch := strings.TrimSpace(override)
-	if baseBranch != "" {
-		return baseBranch
+
+func buildFluxStarterGitRepository(service bson.M, baseBranch string) string {
+	serviceName := sanitizeGitOpsPathSegment(shared.StringValue(service["name"]))
+	repoURL := strings.TrimSpace(shared.StringValue(service["repoUrl"]))
+	if strings.HasPrefix(repoURL, "https://github.com/") && !strings.HasSuffix(repoURL, ".git") {
+		repoURL += ".git"
 	}
-	baseBranch = strings.TrimSpace(shared.StringValue(service["branch"]))
-	if baseBranch == "" {
-		baseBranch = "main"
-	}
-	return baseBranch
+	return strings.TrimSpace(fmt.Sprintf(`
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: releasea-%s
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/part-of: releasea
+    releasea.io/service-id: %s
+    releasea.io/service-name: %s
+spec:
+  interval: 1m0s
+  url: %s
+  ref:
+    branch: %s
+`, serviceName, shared.StringValue(service["id"]), serviceName, repoURL, baseBranch)) + "\n"
 }
 
-func buildGitOpsBranchName(serviceName string) string {
-	return fmt.Sprintf("releasea/gitops/%s-%s", sanitizeGitOpsPathSegment(serviceName), nowForGitOpsPullRequest().Format("20060102150405"))
-}
-
-func defaultGitOpsFilePath(serviceName, override string) string {
-	if trimmed := strings.Trim(strings.TrimSpace(override), "/"); trimmed != "" {
-		return trimmed
-	}
-	return defaultGitOpsLegacyFilePath(serviceName)
-}
-
-func defaultGitOpsCommitMessage(serviceName, override string) string {
-	if trimmed := strings.TrimSpace(override); trimmed != "" {
-		return trimmed
-	}
-	return fmt.Sprintf("chore(gitops): update desired state for %s", strings.TrimSpace(serviceName))
-}
-
-func defaultGitOpsPRTitle(serviceName, override string) string {
-	if trimmed := strings.TrimSpace(override); trimmed != "" {
-		return trimmed
-	}
-	return fmt.Sprintf("chore(gitops): update desired state for %s", strings.TrimSpace(serviceName))
-}
-
-func defaultGitOpsPRBody(service bson.M, warnings []string, override string) string {
-	if trimmed := strings.TrimSpace(override); trimmed != "" {
-		return trimmed
-	}
-	lines := []string{
-		"## Releasea GitOps change request",
-		"",
-		"This pull request was created by Releasea to update the exported desired state document for the managed service.",
-		"",
-		"- Service: `" + shared.StringValue(service["name"]) + "`",
-		"- Project ID: `" + shared.StringValue(service["projectId"]) + "`",
-		"- Source type: `" + normalizeServiceSourceType(shared.StringValue(service["sourceType"])) + "`",
-	}
-	if len(warnings) > 0 {
-		lines = append(lines, "", "### Notes")
-		for _, warning := range warnings {
-			lines = append(lines, "- "+warning)
-		}
-	}
-	return strings.Join(lines, "\n")
-}
-
-func sanitizeGitOpsPathSegment(value string) string {
-	slug := make([]rune, 0, len(value))
-	lastDash := false
-	for _, char := range strings.ToLower(strings.TrimSpace(value)) {
-		switch {
-		case char >= 'a' && char <= 'z', char >= '0' && char <= '9':
-			slug = append(slug, char)
-			lastDash = false
-		case !lastDash:
-			slug = append(slug, '-')
-			lastDash = true
-		}
-	}
-	result := strings.Trim(string(slug), "-")
-	if result == "" {
-		return "service"
-	}
-	return result
+func buildFluxStarterKustomization(service bson.M) string {
+	serviceName := sanitizeGitOpsPathSegment(shared.StringValue(service["name"]))
+	return strings.TrimSpace(fmt.Sprintf(`
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: releasea-%s
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/part-of: releasea
+    releasea.io/service-id: %s
+    releasea.io/service-name: %s
+spec:
+  interval: 10m0s
+  path: ./.releasea/gitops/%s
+  prune: false
+  wait: false
+  targetNamespace: releasea-system
+  sourceRef:
+    kind: GitRepository
+    name: releasea-%s
+`, serviceName, shared.StringValue(service["id"]), serviceName, serviceName, serviceName)) + "\n"
 }

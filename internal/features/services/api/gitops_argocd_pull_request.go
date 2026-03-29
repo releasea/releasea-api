@@ -15,7 +15,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
-	"gopkg.in/yaml.v3"
 )
 
 type gitOpsArgoCDPullRequestPayload struct {
@@ -60,10 +59,12 @@ var openServiceArgoCDStarterPullRequest = func(
 		return nil, errors.New("service repository URL is required for Argo CD GitOps pull requests")
 	}
 
-	document, warnings := buildServiceDesiredStateDocument(service, rules, nowForDesiredState())
-	desiredStateYAML, err := yaml.Marshal(document)
+	exportData, err := buildServiceDesiredStateExport(service, rules)
 	if err != nil {
 		return nil, fmt.Errorf("failed to render desired state: %w", err)
+	}
+	if exportData.Validation.Status == "invalid" {
+		return nil, serviceDesiredStateValidationError{Validation: exportData.Validation}
 	}
 
 	serviceName := shared.StringValue(service["name"])
@@ -73,10 +74,10 @@ var openServiceArgoCDStarterPullRequest = func(
 		BaseBranch:    baseBranch,
 		BranchName:    fmt.Sprintf("releasea/gitops/argocd/%s-%s", sanitizeGitOpsPathSegment(serviceName), nowForGitOpsPullRequest().Format("20060102150405")),
 		FilePath:      defaultGitOpsArgoCDDesiredStateFilePath(serviceName),
-		Content:       string(desiredStateYAML),
+		Content:       exportData.YAML,
 		CommitMessage: defaultGitOpsArgoCDCommitMessage(serviceName, payload.CommitMessage),
 		Title:         defaultGitOpsArgoCDPRTitle(serviceName, payload.Title),
-		Body:          defaultGitOpsArgoCDPRBody(service, warnings, payload.Body),
+		Body:          defaultGitOpsArgoCDPRBody(service, exportData.Warnings, payload.Body),
 		AdditionalFiles: []scmmodels.DesiredStatePullRequestFile{
 			{
 				Path:    defaultGitOpsArgoCDKustomizationFilePath(serviceName),
@@ -128,6 +129,19 @@ func CreateServiceArgoCDGitOpsPullRequest(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Service repository URL is required for Argo CD GitOps pull requests")
 		return
 	}
+	if err := ensureGitOpsRepositoryPolicyReady(ctx, service); err != nil {
+		var repositoryPolicyErr serviceGitOpsRepositoryPolicyError
+		if errors.As(err, &repositoryPolicyErr) {
+			c.JSON(http.StatusConflict, gin.H{
+				"message": err.Error(),
+				"code":    "GITOPS_REPOSITORY_POLICY_INVALID",
+				"policy":  repositoryPolicyErr.Check,
+			})
+			return
+		}
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to evaluate GitOps repository policy")
+		return
+	}
 
 	rules, err := findRulesForDesiredState(ctx, serviceID)
 	if err != nil {
@@ -137,6 +151,15 @@ func CreateServiceArgoCDGitOpsPullRequest(c *gin.Context) {
 
 	pr, err := openServiceArgoCDStarterPullRequest(ctx, service, rules, payload)
 	if err != nil {
+		var validationErr serviceDesiredStateValidationError
+		if errors.As(err, &validationErr) {
+			c.JSON(http.StatusConflict, gin.H{
+				"message":    validationErr.Validation.Summary,
+				"code":       "GITOPS_DESIRED_STATE_INVALID",
+				"validation": validationErr.Validation,
+			})
+			return
+		}
 		shared.RespondError(c, http.StatusBadGateway, err.Error())
 		return
 	}

@@ -411,6 +411,9 @@ func workerJWTAllowed(method, path string) bool {
 		}
 	}
 	if method == http.MethodGet {
+		if strings.Contains(path, "/workers/pool-control") {
+			return true
+		}
 		if strings.Contains(path, "/operations") && !strings.HasSuffix(path, "/status") {
 			return true
 		}

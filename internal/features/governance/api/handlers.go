@@ -320,6 +320,7 @@ func UpdateGovernanceSettings(c *gin.Context) {
 		},
 		"deployPolicy": bson.M{
 			"enabled": payload.DeployPolicy.Enabled,
+			"dryRun":  payload.DeployPolicy.DryRun,
 			"rules":   normalizeDeployPolicyRules(payload.DeployPolicy.Rules),
 		},
 		"rulePublishApproval": bson.M{

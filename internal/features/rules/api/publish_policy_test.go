@@ -119,6 +119,64 @@ func TestMaybeRespondRulePublishPolicyBlockedAllowsInternalOnlyPublish(t *testin
 	}
 }
 
+func TestMaybeRespondRulePublishPolicyBlockedAllowsDryRunViolations(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Set("authUserId", "user-1")
+	c.Set("authName", "Platform Admin")
+	c.Set("authEmail", "admin@releasea.io")
+
+	dryRunAuditCalled := false
+	originalDryRunAudit := recordGovernanceRulePublishPolicyDryRunAudit
+	recordGovernanceRulePublishPolicyDryRunAudit = func(
+		ctx context.Context,
+		ruleID string,
+		ruleName string,
+		performedBy bson.M,
+		details bson.M,
+	) {
+		dryRunAuditCalled = true
+	}
+	defer func() {
+		recordGovernanceRulePublishPolicyDryRunAudit = originalDryRunAudit
+	}()
+
+	settings := bson.M{
+		"deployPolicy": bson.M{
+			"enabled": true,
+			"dryRun":  true,
+			"rules": []interface{}{
+				bson.M{
+					"environment":           "prod",
+					"blockExternalExposure": true,
+				},
+			},
+		},
+	}
+
+	blocked := maybeRespondRulePublishPolicyBlocked(
+		c,
+		context.Background(),
+		settings,
+		"rule-1",
+		"checkout",
+		"svc-1",
+		"prod",
+		false,
+		true,
+	)
+	if blocked {
+		t.Fatalf("expected dry-run publish policy to avoid blocking the request")
+	}
+	if !dryRunAuditCalled {
+		t.Fatalf("expected dry-run governance audit to be recorded")
+	}
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+}
+
 func TestGetRulePublishPolicyCheckReturnsEvaluation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

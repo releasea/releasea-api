@@ -32,6 +32,7 @@ var evaluateRulePublishPolicyCheck = func(
 		Environment: environment,
 		Internal:    internal,
 		External:    external,
+		DryRun:      shared.IsDeployPolicyDryRun(settings),
 		Violations:  shared.EvaluateExternalExposurePolicy(settings, environment, external),
 	}, nil
 }
@@ -61,7 +62,30 @@ type rulePublishPolicyEvaluationResult struct {
 	Environment string                                   `json:"environment"`
 	Internal    bool                                     `json:"internal"`
 	External    bool                                     `json:"external"`
+	DryRun      bool                                     `json:"dryRun"`
 	Violations  []shared.GovernanceDeployPolicyViolation `json:"violations"`
+}
+
+var recordGovernanceRulePublishPolicyDryRunAudit = func(
+	ctx context.Context,
+	ruleID string,
+	ruleName string,
+	performedBy bson.M,
+	details bson.M,
+) {
+	auditID := "gaudit-" + uuid.NewString()
+	doc := bson.M{
+		"_id":          auditID,
+		"id":           auditID,
+		"action":       "governance.rule_publish_policy.dry_run_violation",
+		"resourceType": "rule",
+		"resourceId":   ruleID,
+		"resourceName": ruleName,
+		"performedBy":  performedBy,
+		"performedAt":  shared.NowISO(),
+		"details":      details,
+	}
+	_ = shared.InsertOne(ctx, shared.Collection(shared.GovernanceAuditCollection), doc)
 }
 
 func resolveRulePublishPolicyPerformedBy(c *gin.Context) bson.M {
@@ -88,14 +112,21 @@ func maybeRespondRulePublishPolicyBlocked(
 		return false
 	}
 
-	recordGovernanceRulePublishPolicyBlockAudit(ctx, ruleID, ruleName, resolveRulePublishPolicyPerformedBy(c), bson.M{
+	details := bson.M{
 		"serviceId":    serviceID,
 		"environment":  environment,
 		"internal":     internal,
 		"external":     external,
+		"dryRun":       shared.IsDeployPolicyDryRun(settings),
 		"violations":   violations,
 		"resourceType": "rule",
-	})
+	}
+	if shared.IsDeployPolicyDryRun(settings) {
+		recordGovernanceRulePublishPolicyDryRunAudit(ctx, ruleID, ruleName, resolveRulePublishPolicyPerformedBy(c), details)
+		return false
+	}
+
+	recordGovernanceRulePublishPolicyBlockAudit(ctx, ruleID, ruleName, resolveRulePublishPolicyPerformedBy(c), details)
 
 	c.JSON(http.StatusConflict, gin.H{
 		"queued":     false,

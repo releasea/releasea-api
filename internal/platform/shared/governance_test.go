@@ -2,6 +2,7 @@ package shared
 
 import (
 	"testing"
+	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
 )
@@ -239,6 +240,22 @@ func TestNormalizeDeployPolicyRules(t *testing.T) {
 	}
 }
 
+func TestIsDeployPolicyDryRun(t *testing.T) {
+	settings := bson.M{
+		"deployPolicy": bson.M{
+			"enabled": true,
+			"dryRun":  true,
+		},
+	}
+
+	if !IsDeployPolicyDryRun(settings) {
+		t.Fatalf("expected deploy policy dry run to be enabled")
+	}
+	if IsDeployPolicyDryRun(bson.M{}) {
+		t.Fatalf("expected empty settings to default dry run to disabled")
+	}
+}
+
 func TestEvaluateExternalExposurePolicy(t *testing.T) {
 	settings := bson.M{
 		"deployPolicy": bson.M{
@@ -262,6 +279,48 @@ func TestEvaluateExternalExposurePolicy(t *testing.T) {
 
 	if got := EvaluateExternalExposurePolicy(settings, "prod", false); len(got) != 0 {
 		t.Fatalf("expected no exposure violations for internal-only publish, got %v", got)
+	}
+}
+
+func TestNormalizeGovernanceExceptionCodes(t *testing.T) {
+	if got := NormalizeGovernanceExceptionCodes(nil); len(got) != 1 || got[0] != "*" {
+		t.Fatalf("expected empty codes to normalize to wildcard, got %v", got)
+	}
+	if got := NormalizeGovernanceExceptionCodes([]string{" explicit-version-required ", "ALL", "registry-not-allowed"}); len(got) != 1 || got[0] != "*" {
+		t.Fatalf("expected wildcard override to win, got %v", got)
+	}
+	if got := NormalizeGovernanceExceptionCodes([]string{" explicit-version-required ", "registry-not-allowed", "EXPLICIT-VERSION-REQUIRED"}); len(got) != 2 {
+		t.Fatalf("expected deduplicated codes, got %v", got)
+	}
+}
+
+func TestFilterDeployPolicyViolationsWithExceptions(t *testing.T) {
+	future := time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339)
+	violations := []GovernanceDeployPolicyViolation{
+		{Code: "explicit-version-required", Environment: "prod", Message: "Pinned version required"},
+		{Code: "registry-not-allowed", Environment: "prod", Message: "Registry not allowed"},
+	}
+	exceptions := []bson.M{
+		{
+			"id":          "gexc-1",
+			"policy":      GovernanceExceptionPolicyDeploy,
+			"environment": "prod",
+			"codes":       []string{"explicit-version-required"},
+			"reason":      "Controlled migration",
+			"expiresAt":   future,
+			"createdAt":   future,
+		},
+	}
+
+	filtered, applied := FilterDeployPolicyViolationsWithExceptions(violations, exceptions)
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 remaining violation, got %d", len(filtered))
+	}
+	if filtered[0].Code != "registry-not-allowed" {
+		t.Fatalf("unexpected remaining violation %q", filtered[0].Code)
+	}
+	if len(applied) != 1 || applied[0].ID != "gexc-1" {
+		t.Fatalf("expected exception gexc-1 to be applied, got %+v", applied)
 	}
 }
 

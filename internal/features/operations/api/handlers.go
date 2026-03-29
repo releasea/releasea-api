@@ -3,6 +3,7 @@ package operations
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"releaseaapi/internal/platform/shared"
@@ -13,7 +14,8 @@ import (
 
 func GetOperations(c *gin.Context) {
 	filter := bson.M{}
-	if status := strings.TrimSpace(c.Query("status")); status != "" {
+	status := strings.TrimSpace(c.Query("status"))
+	if status != "" {
 		filter["status"] = status
 	}
 	if resourceID := strings.TrimSpace(c.Query("resourceId")); resourceID != "" {
@@ -25,12 +27,81 @@ func GetOperations(c *gin.Context) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
-	items, err := shared.FindAll(ctx, shared.Collection(shared.OperationsCollection), filter)
+
+	fairnessMode := strings.ToLower(strings.TrimSpace(c.Query("fairness")))
+	limit := 0
+	if rawLimit := strings.TrimSpace(c.Query("limit")); rawLimit != "" {
+		if parsed, err := strconv.Atoi(rawLimit); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+
+	var (
+		items []bson.M
+		err   error
+	)
+	if status == StatusQueued || fairnessMode != "" {
+		items, err = shared.FindAllSorted(ctx, shared.Collection(shared.OperationsCollection), filter, bson.M{
+			"createdAt": 1,
+			"id":        1,
+		})
+	} else {
+		items, err = shared.FindAll(ctx, shared.Collection(shared.OperationsCollection), filter)
+	}
 	if err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to load operations")
 		return
 	}
+	if fairnessMode == "resource" {
+		items = applyOperationFairnessByResource(items)
+	}
+	if limit > 0 && len(items) > limit {
+		items = items[:limit]
+	}
 	c.JSON(http.StatusOK, items)
+}
+
+func applyOperationFairnessByResource(items []bson.M) []bson.M {
+	if len(items) < 3 {
+		return items
+	}
+
+	order := make([]string, 0, len(items))
+	queues := make(map[string][]bson.M, len(items))
+	for _, item := range items {
+		key := operationFairnessKey(item)
+		if _, ok := queues[key]; !ok {
+			order = append(order, key)
+		}
+		queues[key] = append(queues[key], item)
+	}
+
+	out := make([]bson.M, 0, len(items))
+	for len(out) < len(items) {
+		progressed := false
+		for _, key := range order {
+			queue := queues[key]
+			if len(queue) == 0 {
+				continue
+			}
+			out = append(out, queue[0])
+			queues[key] = queue[1:]
+			progressed = true
+		}
+		if !progressed {
+			break
+		}
+	}
+	return out
+}
+
+func operationFairnessKey(item bson.M) string {
+	resourceType := strings.TrimSpace(shared.StringValue(item["resourceType"]))
+	resourceID := strings.TrimSpace(shared.StringValue(item["resourceId"]))
+	if resourceType == "" && resourceID == "" {
+		return "operation:" + strings.TrimSpace(shared.StringValue(item["id"]))
+	}
+	return resourceType + "|" + resourceID
 }
 
 func GetOperation(c *gin.Context) {

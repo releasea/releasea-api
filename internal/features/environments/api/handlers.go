@@ -18,11 +18,12 @@ import (
 // one of the three fixed namespaces based on the mapping rules.
 func CreateEnvironment(c *gin.Context) {
 	var payload struct {
-		ID          string `json:"id"`
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Color       string `json:"color"`
-		IsDefault   bool   `json:"isDefault"`
+		ID          string             `json:"id"`
+		Name        string             `json:"name"`
+		Description string             `json:"description"`
+		Color       string             `json:"color"`
+		IsDefault   bool               `json:"isDefault"`
+		SLOTargets  *sloTargetsPayload `json:"sloTargets"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
@@ -54,6 +55,11 @@ func CreateEnvironment(c *gin.Context) {
 	}
 
 	now := shared.NowISO()
+	sloTargets, err := normalizeEnvironmentSLOTargets(payload.SLOTargets)
+	if err != nil {
+		shared.RespondError(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	doc := bson.M{
 		"_id":         id,
 		"id":          id,
@@ -62,6 +68,7 @@ func CreateEnvironment(c *gin.Context) {
 		"color":       strings.TrimSpace(payload.Color),
 		"isDefault":   payload.IsDefault,
 		"namespace":   namespace,
+		"sloTargets":  sloTargets,
 		"createdAt":   now,
 		"updatedAt":   now,
 	}
@@ -84,10 +91,11 @@ func UpdateEnvironment(c *gin.Context) {
 	}
 
 	var payload struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Color       string `json:"color"`
-		IsDefault   bool   `json:"isDefault"`
+		Name        string             `json:"name"`
+		Description string             `json:"description"`
+		Color       string             `json:"color"`
+		IsDefault   bool               `json:"isDefault"`
+		SLOTargets  *sloTargetsPayload `json:"sloTargets"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
@@ -105,6 +113,11 @@ func UpdateEnvironment(c *gin.Context) {
 
 	oldNamespace := shared.ResolveAppNamespace(envID)
 	_ = existing
+	sloTargets, err := normalizeEnvironmentSLOTargets(payload.SLOTargets)
+	if err != nil {
+		shared.RespondError(c, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	update := bson.M{
 		"name":        strings.TrimSpace(payload.Name),
@@ -112,6 +125,7 @@ func UpdateEnvironment(c *gin.Context) {
 		"color":       strings.TrimSpace(payload.Color),
 		"isDefault":   payload.IsDefault,
 		"namespace":   oldNamespace,
+		"sloTargets":  sloTargets,
 		"updatedAt":   shared.NowISO(),
 	}
 

@@ -103,9 +103,12 @@ func TestGetServiceDesiredStateReturnsVersionedExport(t *testing.T) {
 	}
 
 	var body struct {
-		Filename string   `json:"filename"`
-		YAML     string   `json:"yaml"`
-		Warnings []string `json:"warnings"`
+		Filename   string   `json:"filename"`
+		YAML       string   `json:"yaml"`
+		Warnings   []string `json:"warnings"`
+		Validation struct {
+			Status string `json:"status"`
+		} `json:"validation"`
 		Document struct {
 			Kind       string `json:"kind"`
 			APIVersion string `json:"apiVersion"`
@@ -146,6 +149,9 @@ func TestGetServiceDesiredStateReturnsVersionedExport(t *testing.T) {
 	if len(body.Warnings) != 1 {
 		t.Fatalf("warnings = %#v, want exactly one warning", body.Warnings)
 	}
+	if body.Validation.Status != "verified" {
+		t.Fatalf("validation status = %q, want verified", body.Validation.Status)
+	}
 	if got, want := strings.Join(body.Document.Service.Spec.Environment.Keys, ","), "API_KEY,API_URL"; got != want {
 		t.Fatalf("environment keys = %q, want %q", got, want)
 	}
@@ -163,6 +169,60 @@ func TestGetServiceDesiredStateReturnsVersionedExport(t *testing.T) {
 	}
 	if strings.Contains(body.YAML, "super-secret") {
 		t.Fatalf("yaml output should not include raw environment values: %s", body.YAML)
+	}
+}
+
+func TestGetServiceDesiredStateValidationReturnsIssues(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	previousFindService := findServiceForDesiredState
+	previousFindRules := findRulesForDesiredState
+	findServiceForDesiredState = func(context.Context, string) (bson.M, error) {
+		return bson.M{
+			"id":             "svc-2",
+			"name":           "broken-service",
+			"projectId":      "proj-1",
+			"type":           "microservice",
+			"managementMode": "managed",
+			"sourceType":     "git",
+			"repoUrl":        "",
+			"port":           0,
+		}, nil
+	}
+	findRulesForDesiredState = func(context.Context, string) ([]bson.M, error) {
+		return []bson.M{{"id": "rule-1", "name": "public", "environment": "prod", "gateways": []string{"external"}}}, nil
+	}
+	defer func() {
+		findServiceForDesiredState = previousFindService
+		findRulesForDesiredState = previousFindRules
+	}()
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	request := httptest.NewRequest(http.MethodGet, "/services/svc-2/desired-state/validation", nil)
+	ctx.Request = request
+	ctx.Params = gin.Params{{Key: "id", Value: "svc-2"}}
+
+	GetServiceDesiredStateValidation(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+
+	var body struct {
+		Status string `json:"status"`
+		Issues []struct {
+			Code string `json:"code"`
+		} `json:"issues"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response should be valid json: %v", err)
+	}
+	if body.Status != "invalid" {
+		t.Fatalf("validation status = %q, want invalid", body.Status)
+	}
+	if len(body.Issues) == 0 {
+		t.Fatalf("expected validation issues, got %#v", body)
 	}
 }
 

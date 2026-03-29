@@ -42,7 +42,7 @@ var recordServiceGitOpsDriftStatusChange = func(ctx context.Context, service bso
 			"resourceId":   serviceID,
 			"action":       "service.gitops_drift.state_changed",
 		},
-		bson.M{"createdAt": -1},
+		bson.D{{Key: "createdAt", Value: -1}},
 	)
 	if err == nil && len(items) > 0 {
 		metadata := shared.MapPayload(items[0]["metadata"])

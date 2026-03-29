@@ -126,7 +126,7 @@ var findDeployPolicyExceptions = func(ctx context.Context, serviceID string, env
 		"policy":      shared.GovernanceExceptionPolicyDeploy,
 		"serviceId":   strings.TrimSpace(serviceID),
 		"environment": shared.NormalizeOperationEnvironment(environment),
-	}, bson.M{"createdAt": -1})
+	}, bson.D{{Key: "createdAt", Value: -1}})
 }
 
 func recordPlatformDeployAudit(

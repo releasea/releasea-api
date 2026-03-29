@@ -18,7 +18,7 @@ import (
 )
 
 var findGovernanceExceptions = func(ctx context.Context, filter bson.M) ([]bson.M, error) {
-	return shared.FindAllSorted(ctx, shared.Collection(shared.GovernanceExceptionsCollection), filter, bson.M{"createdAt": -1})
+	return shared.FindAllSorted(ctx, shared.Collection(shared.GovernanceExceptionsCollection), filter, bson.D{{Key: "createdAt", Value: -1}})
 }
 
 var findGovernanceExceptionByID = func(ctx context.Context, exceptionID string) (bson.M, error) {

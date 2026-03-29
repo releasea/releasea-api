@@ -1755,7 +1755,7 @@ func GetServiceBuilds(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
 
-	builds, err := shared.FindAllSorted(ctx, shared.Collection(shared.BuildsCollection), bson.M{"serviceId": serviceID}, bson.M{"createdAt": -1})
+	builds, err := shared.FindAllSorted(ctx, shared.Collection(shared.BuildsCollection), bson.M{"serviceId": serviceID}, bson.D{{Key: "createdAt", Value: -1}})
 	if err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to load builds")
 		return

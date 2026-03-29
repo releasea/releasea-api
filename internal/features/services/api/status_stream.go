@@ -29,6 +29,8 @@ const (
 	defaultStatusStreamPollInterval = 5 * time.Second
 	minStatusStreamPollInterval     = time.Second
 	maxStatusStreamPollInterval     = 60 * time.Second
+	statusSnapshotSchemaVersion     = "2"
+	liveStateEventSchemaVersion     = "1"
 )
 
 type serviceStatusSnapshot struct {
@@ -36,12 +38,16 @@ type serviceStatusSnapshot struct {
 	Deploys     []bson.M `json:"deploys"`
 	Rules       []bson.M `json:"rules"`
 	RuleDeploys []bson.M `json:"ruleDeploys"`
+	Version     string   `json:"version"`
+	Cursor      string   `json:"cursor"`
 	EmittedAt   string   `json:"emittedAt"`
 }
 
 type servicesStatusSnapshot struct {
 	Services  []bson.M `json:"services"`
 	Deploys   []bson.M `json:"deploys"`
+	Version   string   `json:"version"`
+	Cursor    string   `json:"cursor"`
 	EmittedAt string   `json:"emittedAt"`
 }
 
@@ -50,8 +56,26 @@ type serviceStatusChangeEvent struct {
 	Namespace     struct {
 		Collection string `bson:"coll"`
 	} `bson:"ns"`
-	FullDocument bson.M `bson:"fullDocument"`
-	DocumentKey  bson.M `bson:"documentKey"`
+	FullDocument      bson.M `bson:"fullDocument"`
+	DocumentKey       bson.M `bson:"documentKey"`
+	UpdateDescription struct {
+		UpdatedFields bson.M   `bson:"updatedFields"`
+		RemovedFields []string `bson:"removedFields"`
+	} `bson:"updateDescription"`
+}
+
+type liveStateChangeEvent struct {
+	Version        string `json:"version"`
+	Scope          string `json:"scope"`
+	Kind           string `json:"kind"`
+	Collection     string `json:"collection"`
+	OperationType  string `json:"operationType"`
+	ResourceType   string `json:"resourceType"`
+	ResourceID     string `json:"resourceId"`
+	ServiceID      string `json:"serviceId,omitempty"`
+	Summary        string `json:"summary"`
+	ResyncRequired bool   `json:"resyncRequired,omitempty"`
+	Reason         string `json:"reason,omitempty"`
 }
 
 // snapshotEmitter loads a fresh snapshot and emits it if the digest changed.
@@ -116,6 +140,7 @@ func StreamServiceStatus(c *gin.Context) {
 		shared.DeploysCollection,
 		shared.RulesCollection,
 		shared.RuleDeploysCollection,
+		shared.PlatformAuditCollection,
 	}
 
 	streamSSE(c, snapshot, collections, filter, emitter, "service:"+serviceID)
@@ -174,17 +199,35 @@ func streamSSE(
 		return
 	}
 
-	if err := writeSSEEvent(c, "snapshot", initialSnapshot); err != nil {
-		return
-	}
 	lastDigest, err := snapshotDigest(initialSnapshot)
 	if err != nil {
 		return
+	}
+	lastEventID := strings.TrimSpace(c.GetHeader("Last-Event-ID"))
+	initialCursor := snapshotCursor(initialSnapshot)
+	if lastEventID == "" || initialCursor == "" || lastEventID != initialCursor {
+		if err := writeSSEEvent(c, "snapshot", initialSnapshot); err != nil {
+			return
+		}
 	}
 
 	stream, err := openChangeStream(c.Request.Context(), collections)
 	if err != nil {
 		log.Printf("[sse] change stream unavailable for %s, using polling: %v", label, err)
+		if writeErr := writeSSEEvent(c, "resync-required", liveStateChangeEvent{
+			Version:        liveStateEventSchemaVersion,
+			Scope:          label,
+			Kind:           "resync-required",
+			Collection:     "",
+			OperationType:  "refresh",
+			ResourceType:   "snapshot",
+			ResourceID:     label,
+			Summary:        "Live stream switched to polling and needs a fresh snapshot baseline.",
+			ResyncRequired: true,
+			Reason:         "change-stream-unavailable",
+		}); writeErr != nil {
+			return
+		}
 		pollSnapshots(c, emitter, lastDigest, label)
 		return
 	}
@@ -218,6 +261,20 @@ func streamWithChangeStream(
 		if !stream.TryNext(c.Request.Context()) {
 			if err := stream.Err(); err != nil {
 				log.Printf("[sse] change stream failed for %s, switching to polling: %v", label, err)
+				if writeErr := writeSSEEvent(c, "resync-required", liveStateChangeEvent{
+					Version:        liveStateEventSchemaVersion,
+					Scope:          label,
+					Kind:           "resync-required",
+					Collection:     "",
+					OperationType:  "refresh",
+					ResourceType:   "snapshot",
+					ResourceID:     label,
+					Summary:        "Live stream degraded to polling and requested a fresh snapshot baseline.",
+					ResyncRequired: true,
+					Reason:         "change-stream-failed",
+				}); writeErr != nil {
+					return
+				}
 				pollSnapshots(c, emitter, lastDigest, label)
 				return
 			}
@@ -233,10 +290,29 @@ func streamWithChangeStream(
 		if !filter(event) {
 			continue
 		}
+		if changePayload, ok := buildLiveStateChangeEvent(label, event); ok {
+			if err := writeSSEEvent(c, "change", changePayload); err != nil {
+				return
+			}
+		}
 
 		nextDigest, keepOpen, err := emitter(c, lastDigest)
 		if err != nil {
 			log.Printf("[sse] emit error for %s: %v", label, err)
+			if writeErr := writeSSEEvent(c, "resync-required", liveStateChangeEvent{
+				Version:        liveStateEventSchemaVersion,
+				Scope:          label,
+				Kind:           "resync-required",
+				Collection:     "",
+				OperationType:  "refresh",
+				ResourceType:   "snapshot",
+				ResourceID:     label,
+				Summary:        "Incremental stream state needs a full snapshot refresh.",
+				ResyncRequired: true,
+				Reason:         "snapshot-refresh-failed",
+			}); writeErr != nil {
+				return
+			}
 			continue
 		}
 		lastDigest = nextDigest
@@ -264,6 +340,20 @@ func pollSnapshots(c *gin.Context, emitter snapshotEmitter, lastDigest, label st
 			nextDigest, keepOpen, err := emitter(c, lastDigest)
 			if err != nil {
 				log.Printf("[sse] poll error for %s: %v", label, err)
+				if writeErr := writeSSEEvent(c, "resync-required", liveStateChangeEvent{
+					Version:        liveStateEventSchemaVersion,
+					Scope:          label,
+					Kind:           "resync-required",
+					Collection:     "",
+					OperationType:  "refresh",
+					ResourceType:   "snapshot",
+					ResourceID:     label,
+					Summary:        "Polling refresh could not confirm the latest state.",
+					ResyncRequired: true,
+					Reason:         "poll-refresh-failed",
+				}); writeErr != nil {
+					return
+				}
 				continue
 			}
 			lastDigest = nextDigest
@@ -304,13 +394,18 @@ func loadServiceStatusSnapshot(ctx context.Context, serviceID, environment strin
 		return serviceStatusSnapshot{}, false, err
 	}
 
-	return serviceStatusSnapshot{
+	snapshot := serviceStatusSnapshot{
 		Service:     service,
 		Deploys:     normalizeSlice(deploys),
 		Rules:       normalizeSlice(rules),
 		RuleDeploys: normalizeSlice(ruleDeploys),
 		EmittedAt:   shared.NowISO(),
-	}, true, nil
+	}
+	finalized, err := finalizeServiceStatusSnapshot(snapshot)
+	if err != nil {
+		return serviceStatusSnapshot{}, false, err
+	}
+	return finalized, true, nil
 }
 
 func loadServicesStatusSnapshot(ctx context.Context) (servicesStatusSnapshot, error) {
@@ -323,11 +418,12 @@ func loadServicesStatusSnapshot(ctx context.Context) (servicesStatusSnapshot, er
 		return servicesStatusSnapshot{}, err
 	}
 	operations.NormalizeDeployDocuments(deploys)
-	return servicesStatusSnapshot{
+	snapshot := servicesStatusSnapshot{
 		Services:  normalizeSlice(servicesList),
 		Deploys:   normalizeSlice(deploys),
 		EmittedAt: shared.NowISO(),
-	}, nil
+	}
+	return finalizeServicesStatusSnapshot(snapshot)
 }
 
 // --- Emitters (adapters between loaders and the generic engine) ---------------
@@ -360,6 +456,26 @@ func servicesSnapshotEmitter() snapshotEmitter {
 		}
 		return emitIfChanged(c, snapshot, currentDigest)
 	}
+}
+
+func finalizeServiceStatusSnapshot(snapshot serviceStatusSnapshot) (serviceStatusSnapshot, error) {
+	digest, err := snapshotDigest(snapshot)
+	if err != nil {
+		return serviceStatusSnapshot{}, err
+	}
+	snapshot.Version = statusSnapshotSchemaVersion
+	snapshot.Cursor = digest
+	return snapshot, nil
+}
+
+func finalizeServicesStatusSnapshot(snapshot servicesStatusSnapshot) (servicesStatusSnapshot, error) {
+	digest, err := snapshotDigest(snapshot)
+	if err != nil {
+		return servicesStatusSnapshot{}, err
+	}
+	snapshot.Version = statusSnapshotSchemaVersion
+	snapshot.Cursor = digest
+	return snapshot, nil
 }
 
 func emitIfChanged(c *gin.Context, snapshot interface{}, currentDigest string) (string, bool, error) {
@@ -411,6 +527,15 @@ func isServiceStatusEventRelevant(event serviceStatusChangeEvent, serviceID stri
 			return sid == serviceID
 		}
 		return event.OperationType == "delete"
+	case shared.PlatformAuditCollection:
+		if strings.TrimSpace(shared.StringValue(event.FullDocument["resourceType"])) != "service" {
+			return false
+		}
+		if strings.TrimSpace(shared.StringValue(event.FullDocument["resourceId"])) != serviceID {
+			return false
+		}
+		action := strings.TrimSpace(shared.StringValue(event.FullDocument["action"]))
+		return strings.HasPrefix(action, "service.gitops_")
 	default:
 		return false
 	}
@@ -429,10 +554,114 @@ func matchesServiceID(fullDocument, documentKey bson.M, serviceID string) bool {
 	return false
 }
 
+func buildLiveStateChangeEvent(scope string, event serviceStatusChangeEvent) (liveStateChangeEvent, bool) {
+	collection := event.Namespace.Collection
+	payload := liveStateChangeEvent{
+		Version:       liveStateEventSchemaVersion,
+		Scope:         scope,
+		Collection:    collection,
+		OperationType: event.OperationType,
+	}
+
+	switch collection {
+	case shared.ServicesCollection:
+		payload.Kind = "service"
+		payload.ResourceType = "service"
+		payload.ResourceID = firstNonEmpty(
+			strings.TrimSpace(shared.StringValue(event.FullDocument["id"])),
+			strings.TrimSpace(shared.StringValue(event.FullDocument["_id"])),
+			strings.TrimSpace(shared.StringValue(event.DocumentKey["_id"])),
+		)
+		payload.ServiceID = payload.ResourceID
+		payload.Summary = "Service state changed."
+		return payload, payload.ResourceID != ""
+	case shared.DeploysCollection:
+		payload.Kind = "deploy"
+		payload.ResourceType = "deploy"
+		payload.ResourceID = firstNonEmpty(
+			strings.TrimSpace(shared.StringValue(event.FullDocument["id"])),
+			strings.TrimSpace(shared.StringValue(event.FullDocument["_id"])),
+			strings.TrimSpace(shared.StringValue(event.DocumentKey["_id"])),
+		)
+		payload.ServiceID = strings.TrimSpace(shared.StringValue(event.FullDocument["serviceId"]))
+		payload.Summary = "Deploy state changed."
+		return payload, payload.ResourceID != ""
+	case shared.RulesCollection, shared.RuleDeploysCollection:
+		payload.Kind = "rule"
+		if collection == shared.RuleDeploysCollection {
+			payload.ResourceType = "rule-deploy"
+			payload.Summary = "Rule deploy state changed."
+		} else {
+			payload.ResourceType = "rule"
+			payload.Summary = "Rule state changed."
+		}
+		payload.ResourceID = firstNonEmpty(
+			strings.TrimSpace(shared.StringValue(event.FullDocument["id"])),
+			strings.TrimSpace(shared.StringValue(event.FullDocument["_id"])),
+			strings.TrimSpace(shared.StringValue(event.DocumentKey["_id"])),
+		)
+		payload.ServiceID = strings.TrimSpace(shared.StringValue(event.FullDocument["serviceId"]))
+		return payload, payload.ResourceID != ""
+	case shared.PlatformAuditCollection:
+		action := strings.TrimSpace(shared.StringValue(event.FullDocument["action"]))
+		if !strings.HasPrefix(action, "service.gitops_") {
+			return liveStateChangeEvent{}, false
+		}
+		payload.Kind = "gitops"
+		payload.ResourceType = "service"
+		payload.ResourceID = strings.TrimSpace(shared.StringValue(event.FullDocument["resourceId"]))
+		payload.ServiceID = payload.ResourceID
+		payload.Summary = gitOpsLiveStateSummary(action)
+		return payload, payload.ResourceID != ""
+	default:
+		return liveStateChangeEvent{}, false
+	}
+}
+
+func gitOpsLiveStateSummary(action string) string {
+	switch strings.TrimSpace(action) {
+	case "service.gitops_pr.create":
+		return "GitOps pull request created."
+	case "service.gitops_argocd_pr.create":
+		return "Argo CD starter pull request created."
+	case "service.gitops_flux_pr.create":
+		return "Flux starter pull request created."
+	case "service.gitops_drift.state_changed":
+		return "GitOps drift state changed."
+	default:
+		return "GitOps state changed."
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
 // --- SSE wire helpers ---------------------------------------------------------
 
 func snapshotDigest(payload interface{}) (string, error) {
-	encoded, err := json.Marshal(payload)
+	stablePayload := payload
+	switch value := payload.(type) {
+	case serviceStatusSnapshot:
+		stablePayload = bson.M{
+			"service":     value.Service,
+			"deploys":     value.Deploys,
+			"rules":       value.Rules,
+			"ruleDeploys": value.RuleDeploys,
+		}
+	case servicesStatusSnapshot:
+		stablePayload = bson.M{
+			"services": value.Services,
+			"deploys":  value.Deploys,
+		}
+	}
+
+	encoded, err := json.Marshal(stablePayload)
 	if err != nil {
 		return "", err
 	}
@@ -445,11 +674,33 @@ func writeSSEEvent(c *gin.Context, event string, payload interface{}) error {
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event, data); err != nil {
+	idLine := ""
+	switch value := payload.(type) {
+	case serviceStatusSnapshot:
+		if value.Cursor != "" {
+			idLine = fmt.Sprintf("id: %s\n", value.Cursor)
+		}
+	case servicesStatusSnapshot:
+		if value.Cursor != "" {
+			idLine = fmt.Sprintf("id: %s\n", value.Cursor)
+		}
+	}
+	if _, err := fmt.Fprintf(c.Writer, "%sevent: %s\ndata: %s\n\n", idLine, event, data); err != nil {
 		return err
 	}
 	c.Writer.Flush()
 	return nil
+}
+
+func snapshotCursor(payload interface{}) string {
+	switch value := payload.(type) {
+	case serviceStatusSnapshot:
+		return value.Cursor
+	case servicesStatusSnapshot:
+		return value.Cursor
+	default:
+		return ""
+	}
 }
 
 func writeSSEComment(c *gin.Context, comment string) error {

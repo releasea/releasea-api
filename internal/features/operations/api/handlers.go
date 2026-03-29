@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"releaseaapi/internal/platform/shared"
 
@@ -41,9 +42,9 @@ func GetOperations(c *gin.Context) {
 		err   error
 	)
 	if status == StatusQueued || fairnessMode != "" {
-		items, err = shared.FindAllSorted(ctx, shared.Collection(shared.OperationsCollection), filter, bson.M{
-			"createdAt": 1,
-			"id":        1,
+		items, err = shared.FindAllSorted(ctx, shared.Collection(shared.OperationsCollection), filter, bson.D{
+			{Key: "createdAt", Value: 1},
+			{Key: "id", Value: 1},
 		})
 	} else {
 		items, err = shared.FindAll(ctx, shared.Collection(shared.OperationsCollection), filter)
@@ -129,8 +130,9 @@ func UpdateOperationStatus(c *gin.Context) {
 	}
 
 	var payload struct {
-		Status string `json:"status"`
-		Error  string `json:"error"`
+		Status string                       `json:"status"`
+		Error  string                       `json:"error"`
+		Claim  *operationClaimStatusPayload `json:"claim"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil || payload.Status == "" {
 		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
@@ -190,6 +192,12 @@ func UpdateOperationStatus(c *gin.Context) {
 	}
 
 	now := shared.NowISO()
+	nowTime := time.Now().UTC()
+	workerName := shared.StringValue(registration["name"])
+	if workerName == "" {
+		workerName = shared.StringValue(registration["id"])
+	}
+	var claimMetadata bson.M
 	update := bson.M{
 		"status":    payload.Status,
 		"updatedAt": now,
@@ -199,9 +207,16 @@ func UpdateOperationStatus(c *gin.Context) {
 	}
 	if payload.Status == StatusInProgress {
 		update["startedAt"] = now
+		claimMetadata = buildOperationClaimMetadata(registration, regID, payload.Claim, nowTime)
+		update["claim"] = claimMetadata
 	}
 	if payload.Status == StatusSucceeded || payload.Status == StatusFailed {
 		update["finishedAt"] = now
+		if _, hasClaim := op["claim"]; hasClaim || opRegID != "" {
+			update["claim.lastWorkerStatus"] = payload.Status
+			update["claim.lastWorkerStatusAt"] = now
+			update["claim.releasedAt"] = now
+		}
 	}
 	if payload.Error != "" {
 		update["error"] = payload.Error
@@ -266,10 +281,6 @@ func UpdateOperationStatus(c *gin.Context) {
 		}
 	}
 
-	workerName := shared.StringValue(registration["name"])
-	if workerName == "" {
-		workerName = shared.StringValue(registration["id"])
-	}
 	shared.RecordAuditEvent(ctx, shared.AuditEvent{
 		Action:       "operation." + payload.Status,
 		ResourceType: "operation",
@@ -281,9 +292,10 @@ func UpdateOperationStatus(c *gin.Context) {
 		Source:       "worker",
 		Message:      payload.Error,
 		Metadata: map[string]interface{}{
-			"type":         shared.StringValue(op["type"]),
-			"resourceType": shared.StringValue(op["resourceType"]),
-			"resourceId":   shared.StringValue(op["resourceId"]),
+			"type":           shared.StringValue(op["type"]),
+			"resourceType":   shared.StringValue(op["resourceType"]),
+			"resourceId":     shared.StringValue(op["resourceId"]),
+			"leaseExpiresAt": shared.StringValue(claimMetadata["leaseExpiresAt"]),
 		},
 	})
 	notifyOperationResult(ctx, op, payload.Status, payload.Error)

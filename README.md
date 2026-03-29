@@ -98,6 +98,8 @@ Behavior summary:
 |---|---|---|
 | `RABBITMQ_URL` | RabbitMQ AMQP URL | `amqp://releasea:releasea@localhost:5672/` |
 | `WORKER_QUEUE` | Queue name consumed by workers | `releasea.worker` |
+| `WORKER_QUEUE_DLQ_ENABLE` | Enables a dead-letter queue for terminal broker rejections | `true` |
+| `WORKER_QUEUE_DLQ_NAME` | Dead-letter queue name used for rejected worker operations | `releasea.worker.dead-letter` |
 | `WORKER_STALE_SECONDS` | Worker stale timeout used for environment-availability checks | `90` |
 
 ### Observability and Runtime Status
@@ -135,6 +137,9 @@ Behavior summary:
 
 | Variable | Description | Default |
 |---|---|---|
+| `RABBITMQ_TLS_MODE` | TLS policy for RabbitMQ transport (`auto`, `required`, `disabled`) | `auto` |
+| `RABBITMQ_TLS_REQUIRE` | Force RabbitMQ TLS even outside production env detection | `false` |
+| `RABBITMQ_ALLOW_INSECURE_IN_PRODUCTION` | Escape hatch to allow insecure queue transport in production-like envs | `false` |
 | `RABBITMQ_TLS_ENABLE` | Enables TLS for RabbitMQ connection | `false` |
 | `RABBITMQ_TLS_SERVER_NAME` | TLS server name override | _(empty)_ |
 | `RABBITMQ_TLS_CA_PATH` | CA bundle path | _(empty)_ |

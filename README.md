@@ -15,8 +15,8 @@ The API is the control plane for services, deploy operations, workers, governanc
 - Quickstart validation: [docs.releasea.io/?doc=smoke-checks](https://docs.releasea.io/?doc=smoke-checks)
 - Environments and workers: [docs.releasea.io/?doc=environments-and-workers](https://docs.releasea.io/?doc=environments-and-workers)
 - Public components: [docs.releasea.io/?doc=public-components](https://docs.releasea.io/?doc=public-components)
-- Contribution guide: [../CONTRIBUTING.md](../CONTRIBUTING.md)
-- Public roadmap: [../ROADMAP.md](../ROADMAP.md)
+- Contribution guide: [docs.releasea.io/?doc=community-contributing](https://docs.releasea.io/?doc=community-contributing)
+- Public roadmap: [docs.releasea.io/?doc=public-roadmap](https://docs.releasea.io/?doc=public-roadmap)
 - Provider extension: [docs.releasea.io/?doc=provider-extension](https://docs.releasea.io/?doc=provider-extension)
 
 ## Running Locally
@@ -151,4 +151,4 @@ Behavior summary:
 
 ## License
 
-Apache 2.0 - See [LICENSE](LICENSE) for details.
+Apache 2.0 - See [docs.releasea.io/?doc=license-and-usage](https://docs.releasea.io/?doc=license-and-usage) for details.

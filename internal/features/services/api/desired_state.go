@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 
 	"releaseaapi/internal/platform/shared"
@@ -28,10 +29,35 @@ var nowForDesiredState = func() string {
 }
 
 type serviceDesiredStateExport struct {
-	Document serviceDesiredStateDocument `json:"document"`
-	YAML     string                      `json:"yaml"`
-	Filename string                      `json:"filename"`
-	Warnings []string                    `json:"warnings,omitempty"`
+	Document   serviceDesiredStateDocument   `json:"document"`
+	YAML       string                        `json:"yaml"`
+	Filename   string                        `json:"filename"`
+	Warnings   []string                      `json:"warnings,omitempty"`
+	Validation serviceDesiredStateValidation `json:"validation"`
+}
+
+type serviceDesiredStateValidation struct {
+	Status  string                               `json:"status"`
+	Summary string                               `json:"summary"`
+	Issues  []serviceDesiredStateValidationIssue `json:"issues,omitempty"`
+}
+
+type serviceDesiredStateValidationIssue struct {
+	Code    string `json:"code"`
+	Level   string `json:"level"`
+	Path    string `json:"path,omitempty"`
+	Message string `json:"message"`
+}
+
+type serviceDesiredStateValidationError struct {
+	Validation serviceDesiredStateValidation
+}
+
+func (e serviceDesiredStateValidationError) Error() string {
+	if strings.TrimSpace(e.Validation.Summary) != "" {
+		return e.Validation.Summary
+	}
+	return "desired state validation failed"
 }
 
 type serviceDesiredStateDocument struct {
@@ -96,16 +122,18 @@ type serviceDesiredStateScheduleSpec struct {
 }
 
 type serviceDesiredStateRuntimeSpec struct {
-	Port               int                    `json:"port,omitempty" yaml:"port,omitempty"`
-	HealthCheckPath    string                 `json:"healthCheckPath,omitempty" yaml:"healthCheckPath,omitempty"`
-	Replicas           int                    `json:"replicas,omitempty" yaml:"replicas,omitempty"`
-	MinReplicas        int                    `json:"minReplicas,omitempty" yaml:"minReplicas,omitempty"`
-	MaxReplicas        int                    `json:"maxReplicas,omitempty" yaml:"maxReplicas,omitempty"`
-	CPU                int                    `json:"cpu,omitempty" yaml:"cpu,omitempty"`
-	Memory             int                    `json:"memory,omitempty" yaml:"memory,omitempty"`
-	ProfileID          string                 `json:"profileId,omitempty" yaml:"profileId,omitempty"`
-	WorkerTags         []string               `json:"workerTags,omitempty" yaml:"workerTags,omitempty"`
-	DeploymentStrategy map[string]interface{} `json:"deploymentStrategy,omitempty" yaml:"deploymentStrategy,omitempty"`
+	Port                   int                    `json:"port,omitempty" yaml:"port,omitempty"`
+	HealthCheckPath        string                 `json:"healthCheckPath,omitempty" yaml:"healthCheckPath,omitempty"`
+	Replicas               int                    `json:"replicas,omitempty" yaml:"replicas,omitempty"`
+	MinReplicas            int                    `json:"minReplicas,omitempty" yaml:"minReplicas,omitempty"`
+	MaxReplicas            int                    `json:"maxReplicas,omitempty" yaml:"maxReplicas,omitempty"`
+	CPU                    int                    `json:"cpu,omitempty" yaml:"cpu,omitempty"`
+	Memory                 int                    `json:"memory,omitempty" yaml:"memory,omitempty"`
+	ProfileID              string                 `json:"profileId,omitempty" yaml:"profileId,omitempty"`
+	WorkerTags             []string               `json:"workerTags,omitempty" yaml:"workerTags,omitempty"`
+	PreferredWorkerCluster string                 `json:"preferredWorkerCluster,omitempty" yaml:"preferredWorkerCluster,omitempty"`
+	PreferredWorkerRegion  string                 `json:"preferredWorkerRegion,omitempty" yaml:"preferredWorkerRegion,omitempty"`
+	DeploymentStrategy     map[string]interface{} `json:"deploymentStrategy,omitempty" yaml:"deploymentStrategy,omitempty"`
 }
 
 type serviceDesiredStateCredentialRefs struct {
@@ -181,19 +209,55 @@ func GetServiceDesiredState(c *gin.Context) {
 		return
 	}
 
-	document, warnings := buildServiceDesiredStateDocument(service, rules, nowForDesiredState())
-	rendered, err := yaml.Marshal(document)
+	exportData, err := buildServiceDesiredStateExport(service, rules)
 	if err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to render desired state")
 		return
 	}
 
-	c.JSON(http.StatusOK, serviceDesiredStateExport{
-		Document: document,
-		YAML:     string(rendered),
-		Filename: buildDesiredStateFilename(shared.StringValue(service["name"])),
-		Warnings: warnings,
-	})
+	c.JSON(http.StatusOK, exportData)
+}
+
+func GetServiceDesiredStateValidation(c *gin.Context) {
+	serviceID := strings.TrimSpace(c.Param("id"))
+	if serviceID == "" {
+		shared.RespondError(c, http.StatusBadRequest, "Service ID required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	defer cancel()
+
+	service, err := findServiceForDesiredState(ctx, serviceID)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			shared.RespondError(c, http.StatusNotFound, "Service not found")
+			return
+		}
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to load service")
+		return
+	}
+	if isObservedService(service) {
+		c.JSON(http.StatusConflict, gin.H{
+			"message": "Desired state validation is only available for managed services.",
+			"code":    "SERVICE_OBSERVED_MODE",
+		})
+		return
+	}
+
+	rules, err := findRulesForDesiredState(ctx, serviceID)
+	if err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to load service rules")
+		return
+	}
+
+	exportData, err := buildServiceDesiredStateExport(service, rules)
+	if err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to validate desired state")
+		return
+	}
+
+	c.JSON(http.StatusOK, exportData.Validation)
 }
 
 func buildServiceDesiredStateDocument(service bson.M, rules []bson.M, exportedAt string) (serviceDesiredStateDocument, []string) {
@@ -233,6 +297,23 @@ func buildServiceDesiredStateDocument(service bson.M, rules []bson.M, exportedAt
 	}, warnings
 }
 
+func buildServiceDesiredStateExport(service bson.M, rules []bson.M) (serviceDesiredStateExport, error) {
+	document, warnings := buildServiceDesiredStateDocument(service, rules, nowForDesiredState())
+	validation := validateServiceDesiredStateDocument(document)
+	rendered, err := yaml.Marshal(document)
+	if err != nil {
+		return serviceDesiredStateExport{}, err
+	}
+
+	return serviceDesiredStateExport{
+		Document:   document,
+		YAML:       string(rendered),
+		Filename:   buildDesiredStateFilename(shared.StringValue(service["name"])),
+		Warnings:   warnings,
+		Validation: validation,
+	}, nil
+}
+
 func buildServiceDesiredStateSpec(service bson.M, environmentKeys []string) serviceDesiredStateServiceSpec {
 	workerTags := shared.NormalizeWorkerTags(shared.ToStringSlice(service["workerTags"]))
 	sort.Strings(workerTags)
@@ -251,16 +332,18 @@ func buildServiceDesiredStateSpec(service bson.M, environmentKeys []string) serv
 		SourceType:     sourceType,
 		DeployTemplate: shared.StringValue(service["deployTemplateId"]),
 		Runtime: serviceDesiredStateRuntimeSpec{
-			Port:               shared.IntValue(service["port"]),
-			HealthCheckPath:    shared.StringValue(service["healthCheckPath"]),
-			Replicas:           shared.IntValue(service["replicas"]),
-			MinReplicas:        shared.IntValue(service["minReplicas"]),
-			MaxReplicas:        shared.IntValue(service["maxReplicas"]),
-			CPU:                shared.IntValue(service["cpu"]),
-			Memory:             shared.IntValue(service["memory"]),
-			ProfileID:          shared.StringValue(service["profileId"]),
-			WorkerTags:         workerTags,
-			DeploymentStrategy: normalizeDesiredStateMap(service["deploymentStrategy"]),
+			Port:                   shared.IntValue(service["port"]),
+			HealthCheckPath:        shared.StringValue(service["healthCheckPath"]),
+			Replicas:               shared.IntValue(service["replicas"]),
+			MinReplicas:            shared.IntValue(service["minReplicas"]),
+			MaxReplicas:            shared.IntValue(service["maxReplicas"]),
+			CPU:                    shared.IntValue(service["cpu"]),
+			Memory:                 shared.IntValue(service["memory"]),
+			ProfileID:              shared.StringValue(service["profileId"]),
+			WorkerTags:             workerTags,
+			PreferredWorkerCluster: shared.StringValue(service["preferredWorkerCluster"]),
+			PreferredWorkerRegion:  shared.StringValue(service["preferredWorkerRegion"]),
+			DeploymentStrategy:     normalizeDesiredStateMap(service["deploymentStrategy"]),
 		},
 		Credentials: serviceDesiredStateCredentialRefs{
 			SCMCredentialID:      shared.StringValue(service["scmCredentialId"]),
@@ -463,5 +546,115 @@ func serviceHasFalseValue(value interface{}) bool {
 		return strings.EqualFold(strings.TrimSpace(typed), "false")
 	default:
 		return false
+	}
+}
+
+func validateServiceDesiredStateDocument(document serviceDesiredStateDocument) serviceDesiredStateValidation {
+	issues := make([]serviceDesiredStateValidationIssue, 0)
+	addIssue := func(level, code, path, message string) {
+		issues = append(issues, serviceDesiredStateValidationIssue{
+			Code:    code,
+			Level:   level,
+			Path:    path,
+			Message: message,
+		})
+	}
+
+	if strings.TrimSpace(document.Service.ID) == "" {
+		addIssue("error", "missing-service-id", "service.id", "Service ID is required in the desired state document.")
+	}
+	if strings.TrimSpace(document.Service.Name) == "" {
+		addIssue("error", "missing-service-name", "service.name", "Service name is required in the desired state document.")
+	}
+	if strings.TrimSpace(document.Service.ProjectID) == "" {
+		addIssue("error", "missing-project-id", "service.projectId", "Project ID is required in the desired state document.")
+	}
+	if strings.TrimSpace(document.Service.Type) == "" {
+		addIssue("error", "missing-service-type", "service.type", "Service type is required in the desired state document.")
+	}
+
+	sourceType := strings.TrimSpace(document.Service.Spec.SourceType)
+	switch sourceType {
+	case "git":
+		if document.Service.Spec.Repo == nil || strings.TrimSpace(document.Service.Spec.Repo.URL) == "" {
+			addIssue("error", "missing-repo-url", "service.spec.repo.url", "Git-based services require a repository URL in desired state.")
+		}
+		if document.Service.Spec.Repo != nil && strings.TrimSpace(document.Service.Spec.Repo.Branch) == "" {
+			addIssue("warning", "missing-repo-branch", "service.spec.repo.branch", "Repository branch is missing. GitOps PRs will fall back to the service default branch.")
+		}
+	case "registry":
+		if document.Service.Spec.Image == nil || strings.TrimSpace(document.Service.Spec.Image.DockerImage) == "" {
+			addIssue("error", "missing-image", "service.spec.image.dockerImage", "Registry-based services require a docker image in desired state.")
+		}
+	case "":
+		addIssue("error", "missing-source-type", "service.spec.sourceType", "Source type is required in the desired state document.")
+	default:
+		addIssue("error", "unsupported-source-type", "service.spec.sourceType", "Source type must be either git or registry.")
+	}
+
+	if document.Service.Type == "static-site" {
+		if document.Service.Spec.StaticSite == nil {
+			addIssue("warning", "missing-static-site-spec", "service.spec.staticSite", "Static-site services should declare build metadata for GitOps review.")
+		} else {
+			if strings.TrimSpace(document.Service.Spec.StaticSite.BuildCommand) == "" {
+				addIssue("warning", "missing-build-command", "service.spec.staticSite.buildCommand", "Static-site desired state should declare a build command.")
+			}
+			if strings.TrimSpace(document.Service.Spec.StaticSite.OutputDir) == "" {
+				addIssue("warning", "missing-output-dir", "service.spec.staticSite.outputDir", "Static-site desired state should declare an output directory.")
+			}
+		}
+	} else if document.Service.Spec.Schedule != nil {
+		if strings.TrimSpace(document.Service.Spec.Schedule.Cron) == "" {
+			addIssue("error", "missing-schedule-cron", "service.spec.schedule.cron", "Scheduled services require a cron expression in desired state.")
+		}
+		if strings.TrimSpace(document.Service.Spec.Schedule.Command) == "" {
+			addIssue("error", "missing-schedule-command", "service.spec.schedule.command", "Scheduled services require a schedule command in desired state.")
+		}
+	} else {
+		if document.Service.Spec.Runtime.Port <= 0 {
+			addIssue("warning", "missing-runtime-port", "service.spec.runtime.port", "Service desired state does not declare a runtime port.")
+		}
+		if strings.TrimSpace(document.Service.Spec.Runtime.HealthCheckPath) == "" {
+			addIssue("warning", "missing-health-check-path", "service.spec.runtime.healthCheckPath", "Service desired state does not declare a health check path.")
+		}
+	}
+
+	for index, rule := range document.Rules {
+		basePath := "rules[" + strconv.Itoa(index) + "]"
+		if strings.TrimSpace(rule.ID) == "" {
+			addIssue("error", "missing-rule-id", basePath+".id", "Each desired-state rule requires an ID.")
+		}
+		if strings.TrimSpace(rule.Name) == "" {
+			addIssue("error", "missing-rule-name", basePath+".name", "Each desired-state rule requires a name.")
+		}
+		if strings.TrimSpace(rule.Environment) == "" {
+			addIssue("error", "missing-rule-environment", basePath+".environment", "Each desired-state rule requires an environment.")
+		}
+		if rule.Publication.External && len(rule.Hosts) == 0 {
+			addIssue("warning", "missing-external-host", basePath+".hosts", "Externally published rules should declare at least one host.")
+		}
+		if !rule.Publication.Internal && !rule.Publication.External {
+			addIssue("warning", "rule-without-publication", basePath+".publication", "Rule does not currently resolve to an internal or external publication target.")
+		}
+	}
+
+	status := "verified"
+	summary := "Desired state is valid for GitOps export and pull-request delivery."
+	for _, issue := range issues {
+		if issue.Level == "error" {
+			status = "invalid"
+			summary = "Desired state is missing required fields for GitOps delivery."
+			break
+		}
+		if issue.Level == "warning" {
+			status = "needs-review"
+			summary = "Desired state is exportable, but it should be reviewed before it becomes a GitOps source of truth."
+		}
+	}
+
+	return serviceDesiredStateValidation{
+		Status:  status,
+		Summary: summary,
+		Issues:  issues,
 	}
 }

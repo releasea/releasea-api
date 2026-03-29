@@ -137,3 +137,45 @@ func TestCreateServiceGitOpsPullRequestReturnsNotFound(t *testing.T) {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
 	}
 }
+
+func TestCreateServiceGitOpsPullRequestRejectsInvalidDesiredState(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	previousFindService := findServiceForDesiredState
+	previousFindRules := findRulesForDesiredState
+	findServiceForDesiredState = func(context.Context, string) (bson.M, error) {
+		return bson.M{
+			"id":             "svc-1",
+			"name":           "checkout-api",
+			"projectId":      "proj-1",
+			"type":           "microservice",
+			"managementMode": "managed",
+			"sourceType":     "git",
+			"repoUrl":        "https://github.com/releasea/checkout-api",
+			"branch":         "main",
+			"port":           0,
+		}, nil
+	}
+	findRulesForDesiredState = func(context.Context, string) ([]bson.M, error) {
+		return []bson.M{}, nil
+	}
+	defer func() {
+		findServiceForDesiredState = previousFindService
+		findRulesForDesiredState = previousFindRules
+	}()
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	request := httptest.NewRequest(http.MethodPost, "/services/svc-1/gitops/pull-requests", nil)
+	ctx.Request = request
+	ctx.Params = gin.Params{{Key: "id", Value: "svc-1"}}
+
+	CreateServiceGitOpsPullRequest(ctx)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusConflict)
+	}
+	if !strings.Contains(recorder.Body.String(), "GITOPS_DESIRED_STATE_INVALID") {
+		t.Fatalf("response should contain GITOPS_DESIRED_STATE_INVALID: %s", recorder.Body.String())
+	}
+}

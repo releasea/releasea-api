@@ -50,9 +50,9 @@ func ensurePlatformDefaults(cfg *config.Config) error {
 	}
 
 	for _, env := range []bson.M{
-		{"id": "dev", "name": "Development", "description": "Internal testing", "color": "#3b82f6", "isDefault": false, "namespace": "releasea-apps-development", "createdAt": now, "updatedAt": now},
-		{"id": "staging", "name": "Staging", "description": "Pre-production validation", "color": "#f59e0b", "isDefault": false, "namespace": "releasea-apps-staging", "createdAt": now, "updatedAt": now},
-		{"id": "prod", "name": "Production", "description": "Customer workloads", "color": "#22c55e", "isDefault": true, "namespace": "releasea-apps-production", "createdAt": now, "updatedAt": now},
+		{"id": "dev", "name": "Development", "description": "Internal testing", "color": "#3b82f6", "isDefault": false, "namespace": "releasea-apps-development", "sloTargets": bson.M{"availabilityPct": 99.5, "latencyP95Ms": 500}, "createdAt": now, "updatedAt": now},
+		{"id": "staging", "name": "Staging", "description": "Pre-production validation", "color": "#f59e0b", "isDefault": false, "namespace": "releasea-apps-staging", "sloTargets": bson.M{"availabilityPct": 99.5, "latencyP95Ms": 500}, "createdAt": now, "updatedAt": now},
+		{"id": "prod", "name": "Production", "description": "Customer workloads", "color": "#22c55e", "isDefault": true, "namespace": "releasea-apps-production", "sloTargets": bson.M{"availabilityPct": 99.5, "latencyP95Ms": 500}, "createdAt": now, "updatedAt": now},
 	} {
 		if err := insertIfMissing(ctx, db.Collection(shared.EnvironmentsCollection), shared.StringValue(env["id"]), env); err != nil {
 			return err
@@ -124,6 +124,7 @@ func ensurePlatformDefaults(cfg *config.Config) error {
 		},
 		"deployPolicy": bson.M{
 			"enabled": false,
+			"dryRun":  false,
 			"rules":   []interface{}{},
 		},
 		"rulePublishApproval": bson.M{

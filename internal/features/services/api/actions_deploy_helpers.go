@@ -41,15 +41,17 @@ type deployResolution struct {
 }
 
 type deployPolicyEvaluationResult struct {
-	Environment     string                                   `json:"environment"`
-	Trigger         string                                   `json:"trigger"`
-	SourceType      string                                   `json:"sourceType"`
-	RegistryHost    string                                   `json:"registryHost,omitempty"`
-	StrategyType    string                                   `json:"strategyType"`
-	Replicas        int                                      `json:"replicas"`
-	ExplicitVersion bool                                     `json:"explicitVersion"`
-	Target          shared.GovernanceDeployPolicyTarget      `json:"target"`
-	Violations      []shared.GovernanceDeployPolicyViolation `json:"violations"`
+	Environment       string                                    `json:"environment"`
+	Trigger           string                                    `json:"trigger"`
+	SourceType        string                                    `json:"sourceType"`
+	RegistryHost      string                                    `json:"registryHost,omitempty"`
+	StrategyType      string                                    `json:"strategyType"`
+	Replicas          int                                       `json:"replicas"`
+	ExplicitVersion   bool                                      `json:"explicitVersion"`
+	DryRun            bool                                      `json:"dryRun"`
+	Target            shared.GovernanceDeployPolicyTarget       `json:"target"`
+	ExceptionsApplied []shared.GovernancePolicyExceptionSummary `json:"exceptionsApplied"`
+	Violations        []shared.GovernanceDeployPolicyViolation  `json:"violations"`
 }
 
 var loadGovernanceSettings = shared.LoadGovernanceSettings
@@ -73,6 +75,58 @@ var recordGovernancePolicyBlockAudit = func(
 		"details":      details,
 	}
 	_ = shared.InsertOne(ctx, shared.Collection(shared.GovernanceAuditCollection), doc)
+}
+
+var recordGovernancePolicyDryRunAudit = func(
+	ctx context.Context,
+	serviceID string,
+	serviceName string,
+	performedBy bson.M,
+	details bson.M,
+) {
+	auditID := "gaudit-" + uuid.NewString()
+	doc := bson.M{
+		"_id":          auditID,
+		"id":           auditID,
+		"action":       "governance.deploy_policy.dry_run_violation",
+		"resourceType": "deploy",
+		"resourceId":   serviceID,
+		"resourceName": serviceName,
+		"performedBy":  performedBy,
+		"performedAt":  shared.NowISO(),
+		"details":      details,
+	}
+	_ = shared.InsertOne(ctx, shared.Collection(shared.GovernanceAuditCollection), doc)
+}
+
+var recordGovernancePolicyExceptionAudit = func(
+	ctx context.Context,
+	serviceID string,
+	serviceName string,
+	performedBy bson.M,
+	details bson.M,
+) {
+	auditID := "gaudit-" + uuid.NewString()
+	doc := bson.M{
+		"_id":          auditID,
+		"id":           auditID,
+		"action":       "governance.deploy_policy.exception_applied",
+		"resourceType": "deploy",
+		"resourceId":   serviceID,
+		"resourceName": serviceName,
+		"performedBy":  performedBy,
+		"performedAt":  shared.NowISO(),
+		"details":      details,
+	}
+	_ = shared.InsertOne(ctx, shared.Collection(shared.GovernanceAuditCollection), doc)
+}
+
+var findDeployPolicyExceptions = func(ctx context.Context, serviceID string, environment string) ([]bson.M, error) {
+	return shared.FindAllSorted(ctx, shared.Collection(shared.GovernanceExceptionsCollection), bson.M{
+		"policy":      shared.GovernanceExceptionPolicyDeploy,
+		"serviceId":   strings.TrimSpace(serviceID),
+		"environment": shared.NormalizeOperationEnvironment(environment),
+	}, bson.M{"createdAt": -1})
 }
 
 func recordPlatformDeployAudit(
@@ -493,17 +547,28 @@ func maybeRespondDeployPolicyBlocked(
 		return false
 	}
 
-	recordGovernancePolicyBlockAudit(ctx, serviceID, serviceName, resolvePerformedByForGovernanceAudit(c), bson.M{
-		"environment":     evaluation.Environment,
-		"trigger":         evaluation.Trigger,
-		"sourceType":      evaluation.SourceType,
-		"registryHost":    evaluation.RegistryHost,
-		"strategyType":    evaluation.StrategyType,
-		"replicas":        evaluation.Replicas,
-		"explicitVersion": evaluation.ExplicitVersion,
-		"target":          evaluation.Target,
-		"violations":      evaluation.Violations,
-	})
+	details := bson.M{
+		"environment":       evaluation.Environment,
+		"trigger":           evaluation.Trigger,
+		"sourceType":        evaluation.SourceType,
+		"registryHost":      evaluation.RegistryHost,
+		"strategyType":      evaluation.StrategyType,
+		"replicas":          evaluation.Replicas,
+		"explicitVersion":   evaluation.ExplicitVersion,
+		"dryRun":            evaluation.DryRun,
+		"target":            evaluation.Target,
+		"exceptionsApplied": evaluation.ExceptionsApplied,
+		"violations":        evaluation.Violations,
+	}
+	if len(evaluation.ExceptionsApplied) > 0 {
+		recordGovernancePolicyExceptionAudit(ctx, serviceID, serviceName, resolvePerformedByForGovernanceAudit(c), details)
+	}
+	if evaluation.DryRun {
+		recordGovernancePolicyDryRunAudit(ctx, serviceID, serviceName, resolvePerformedByForGovernanceAudit(c), details)
+		return false
+	}
+
+	recordGovernancePolicyBlockAudit(ctx, serviceID, serviceName, resolvePerformedByForGovernanceAudit(c), details)
 
 	c.JSON(http.StatusConflict, gin.H{
 		"queued":     false,
@@ -526,20 +591,22 @@ func evaluateDeployPolicyWithResolvedInputs(
 	explicitVersion bool,
 ) (deployPolicyEvaluationResult, error) {
 	result := deployPolicyEvaluationResult{
-		Environment:     environment,
-		Trigger:         trigger,
-		SourceType:      sourceType,
-		RegistryHost:    registryHost,
-		StrategyType:    strategyType,
-		Replicas:        replicas,
-		ExplicitVersion: explicitVersion,
-		Violations:      []shared.GovernanceDeployPolicyViolation{},
+		Environment:       environment,
+		Trigger:           trigger,
+		SourceType:        sourceType,
+		RegistryHost:      registryHost,
+		StrategyType:      strategyType,
+		Replicas:          replicas,
+		ExplicitVersion:   explicitVersion,
+		ExceptionsApplied: []shared.GovernancePolicyExceptionSummary{},
+		Violations:        []shared.GovernanceDeployPolicyViolation{},
 	}
 
 	settings, err := loadGovernanceSettings(ctx)
 	if err != nil {
 		return result, err
 	}
+	result.DryRun = shared.IsDeployPolicyDryRun(settings)
 	target, err := resolveDeployPolicyTarget(ctx, service, sourceType)
 	if err != nil {
 		return result, err
@@ -556,6 +623,14 @@ func evaluateDeployPolicyWithResolvedInputs(
 		explicitVersion,
 		target,
 	)
+	serviceID := strings.TrimSpace(shared.StringValue(service["id"]))
+	if serviceID != "" && len(result.Violations) > 0 {
+		exceptions, err := findDeployPolicyExceptions(ctx, serviceID, environment)
+		if err != nil {
+			return result, err
+		}
+		result.Violations, result.ExceptionsApplied = shared.FilterDeployPolicyViolationsWithExceptions(result.Violations, exceptions)
+	}
 	return result, nil
 }
 
@@ -829,7 +904,7 @@ func persistDeployOperationRecord(
 	request createDeployRequest,
 	resolution deployResolution,
 	strategyType string,
-	workerTags []string,
+	workerRouting workerRoutingResolution,
 	serviceName string,
 	triggeredBy string,
 	deployID string,
@@ -863,9 +938,7 @@ func persistDeployOperationRecord(
 	if resolution.Image != "" {
 		opPayload["image"] = resolution.Image
 	}
-	if normalizedWorkerTags := shared.NormalizeWorkerTags(workerTags); len(normalizedWorkerTags) > 0 {
-		opPayload["workerTags"] = normalizedWorkerTags
-	}
+	applyWorkerRoutingToPayload(opPayload, workerRouting)
 	opPayload["resources"] = resources
 	if resourcesYAML != "" {
 		opPayload["resourcesYaml"] = resourcesYAML
@@ -932,7 +1005,7 @@ func persistPromoteCanaryOperation(
 	ctx context.Context,
 	serviceID string,
 	environment string,
-	workerTags []string,
+	workerRouting workerRoutingResolution,
 	serviceName string,
 	requestedBy string,
 	now string,
@@ -953,9 +1026,7 @@ func persistPromoteCanaryOperation(
 		"requestedBy": requestedBy,
 		"serviceName": serviceName,
 	}
-	if normalizedWorkerTags := shared.NormalizeWorkerTags(workerTags); len(normalizedWorkerTags) > 0 {
-		shared.MapPayload(opDoc["payload"])["workerTags"] = normalizedWorkerTags
-	}
+	applyWorkerRoutingToPayload(shared.MapPayload(opDoc["payload"]), workerRouting)
 
 	if err := shared.InsertOne(ctx, shared.Collection(shared.OperationsCollection), opDoc); err != nil {
 		return nil, "", err

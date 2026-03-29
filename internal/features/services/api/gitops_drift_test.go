@@ -149,6 +149,24 @@ func TestGetServiceGitOpsDriftFallsBackToArgoCDStarterPath(t *testing.T) {
 	}
 }
 
+func TestResolveServiceGitOpsDriftPathsIncludesUniquePresetPaths(t *testing.T) {
+	service := bson.M{
+		"name":    "checkout-api",
+		"repoUrl": "https://github.com/releasea/checkout-api",
+	}
+
+	paths := resolveServiceGitOpsDriftPaths(service, "")
+	if len(paths) != 2 {
+		t.Fatalf("paths = %d, want 2", len(paths))
+	}
+	if paths[0] != ".releasea/gitops/checkout-api.desired-state.yaml" {
+		t.Fatalf("first path = %q", paths[0])
+	}
+	if paths[1] != ".releasea/gitops/checkout-api/desired-state.yaml" {
+		t.Fatalf("second path = %q", paths[1])
+	}
+}
+
 func TestNormalizeGitOpsContent(t *testing.T) {
 	input := "kind: test\r\nvalue: yes\r\n\r\n"
 	got := normalizeGitOpsContent(input)

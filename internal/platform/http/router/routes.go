@@ -145,6 +145,9 @@ func registerWorkerRoutes(rg *gin.RouterGroup) {
 	rg.GET("/workers/bootstrap-profile", workers.GetWorkerBootstrapProfile)
 	rg.GET("/workers", workers.GetWorkers)
 	rg.GET("/workers/pools", workers.GetWorkerPools)
+	rg.GET("/workers/pool-control", workers.GetCurrentWorkerPoolControl)
+	rg.POST("/workers/pools/:id/maintenance", workers.SetWorkerPoolMaintenance)
+	rg.POST("/workers/pools/:id/drain", workers.SetWorkerPoolDrain)
 	rg.GET("/workers/discovered-workloads", workers.GetDiscoveredWorkloads)
 	rg.PUT("/workers/:id", workers.UpdateWorker)
 	rg.DELETE("/workers/:id", workers.DeleteWorker)
@@ -189,9 +192,14 @@ func registerServiceRoutes(rg *gin.RouterGroup) {
 	rg.GET("/services/:id/governance-events", services.GetServiceGovernanceEvents)
 	rg.GET("/services/:id/deploy-policy-check", services.GetServiceDeployPolicyCheck)
 	rg.GET("/services/:id/desired-state", services.GetServiceDesiredState)
+	rg.GET("/services/:id/desired-state/validation", services.GetServiceDesiredStateValidation)
+	rg.GET("/services/:id/gitops/layout-presets", services.GetServiceGitOpsLayoutPresets)
+	rg.GET("/services/:id/gitops/repository-policy-check", services.GetServiceGitOpsRepositoryPolicyCheck)
 	rg.GET("/services/:id/gitops/drift", services.GetServiceGitOpsDrift)
+	rg.GET("/services/:id/gitops/timeline", services.GetServiceGitOpsTimeline)
 	rg.POST("/services/:id/gitops/pull-requests", services.CreateServiceGitOpsPullRequest)
 	rg.POST("/services/:id/gitops/argocd/pull-requests", services.CreateServiceArgoCDGitOpsPullRequest)
+	rg.POST("/services/:id/gitops/flux/pull-requests", services.CreateServiceFluxGitOpsPullRequest)
 }
 
 func registerDeployRoutes(rg *gin.RouterGroup) {
@@ -261,6 +269,7 @@ func registerExternalEndpointRoutes(rg *gin.RouterGroup) {
 func registerTemplateRoutes(rg *gin.RouterGroup) {
 	rg.GET("/templates", templates.ListTemplates)
 	rg.GET("/templates/:id", templates.GetTemplate)
+	rg.POST("/templates/verify", templates.VerifyTemplates)
 	rg.POST("/templates", templates.CreateTemplate)
 	rg.PUT("/templates/:id", templates.UpdateTemplate)
 	rg.DELETE("/templates/:id", templates.DeleteTemplate)
@@ -295,6 +304,9 @@ func registerGovernanceRoutes(rg *gin.RouterGroup) {
 	rg.POST("/governance/approvals", governance.CreateGovernanceApproval)
 	rg.POST("/governance/approvals/:id/review", governance.ReviewGovernanceApproval)
 	rg.DELETE("/governance/approvals/:id", governance.DeleteGovernanceApproval)
+	rg.GET("/governance/exceptions", governance.GetGovernanceExceptions)
+	rg.POST("/governance/exceptions", governance.CreateGovernanceException)
+	rg.DELETE("/governance/exceptions/:id", governance.RevokeGovernanceException)
 	rg.GET("/governance/audit", governance.GetGovernanceAudit)
 }
 

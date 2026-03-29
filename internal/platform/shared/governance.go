@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
@@ -16,6 +17,8 @@ import (
 const (
 	GovernanceApprovalTypeDeploy      = "deploy"
 	GovernanceApprovalTypeRulePublish = "rule-publish"
+
+	GovernanceExceptionPolicyDeploy = "deploy-policy"
 
 	GovernanceApprovalStatusPending  = "pending"
 	GovernanceApprovalStatusApproved = "approved"
@@ -62,6 +65,7 @@ func LoadGovernanceSettings(ctx context.Context) (bson.M, error) {
 			},
 			"deployPolicy": bson.M{
 				"enabled": false,
+				"dryRun":  false,
 				"rules":   []interface{}{},
 			},
 			"rulePublishApproval": bson.M{
@@ -89,6 +93,17 @@ type GovernanceDeployPolicyTarget struct {
 	SecretProvider   string `json:"secretProvider,omitempty"`
 }
 
+type GovernancePolicyExceptionSummary struct {
+	ID          string   `json:"id"`
+	Policy      string   `json:"policy"`
+	Environment string   `json:"environment"`
+	Codes       []string `json:"codes"`
+	Reason      string   `json:"reason"`
+	ExpiresAt   string   `json:"expiresAt"`
+	CreatedAt   string   `json:"createdAt,omitempty"`
+	Status      string   `json:"status,omitempty"`
+}
+
 func normalizeDeployStrategy(value string) string {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	switch normalized {
@@ -111,6 +126,45 @@ func normalizeDeploySourceType(value string) string {
 
 func normalizePolicyIdentifier(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func NormalizeGovernanceExceptionPolicy(value string) string {
+	switch normalizePolicyIdentifier(value) {
+	case "", "deploy", GovernanceExceptionPolicyDeploy:
+		return GovernanceExceptionPolicyDeploy
+	default:
+		return ""
+	}
+}
+
+func NormalizeGovernanceExceptionCodes(values []string) []string {
+	if len(values) == 0 {
+		return []string{"*"}
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := normalizePolicyIdentifier(value)
+		if normalized == "" {
+			continue
+		}
+		if normalized == "all" {
+			normalized = "*"
+		}
+		if normalized == "*" {
+			return []string{"*"}
+		}
+		if _, exists := seen[normalized]; exists {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		result = append(result, normalized)
+	}
+	if len(result) == 0 {
+		return []string{"*"}
+	}
+	sort.Strings(result)
+	return result
 }
 
 func NormalizeRegistryHost(value string) string {
@@ -231,6 +285,117 @@ func NormalizeDeployPolicyRules(raw interface{}) []bson.M {
 		}
 	}
 	return result
+}
+
+func IsDeployPolicyDryRun(settings bson.M) bool {
+	config := MapPayload(settings["deployPolicy"])
+	return BoolValue(config["dryRun"])
+}
+
+func GovernanceTemporaryExceptionStatus(item bson.M, now time.Time) string {
+	if strings.TrimSpace(StringValue(item["revokedAt"])) != "" {
+		return "revoked"
+	}
+	expiresAt := strings.TrimSpace(StringValue(item["expiresAt"]))
+	if expiresAt == "" {
+		return "expired"
+	}
+	parsed, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil {
+		return "expired"
+	}
+	if parsed.After(now.UTC()) {
+		return "active"
+	}
+	return "expired"
+}
+
+func IsGovernanceTemporaryExceptionActive(item bson.M, now time.Time) bool {
+	return GovernanceTemporaryExceptionStatus(item, now) == "active"
+}
+
+func BuildGovernancePolicyExceptionSummary(item bson.M, now time.Time) GovernancePolicyExceptionSummary {
+	return GovernancePolicyExceptionSummary{
+		ID:          strings.TrimSpace(StringValue(item["id"])),
+		Policy:      NormalizeGovernanceExceptionPolicy(StringValue(item["policy"])),
+		Environment: NormalizeOperationEnvironment(StringValue(item["environment"])),
+		Codes:       NormalizeGovernanceExceptionCodes(ToStringSlice(item["codes"])),
+		Reason:      strings.TrimSpace(StringValue(item["reason"])),
+		ExpiresAt:   strings.TrimSpace(StringValue(item["expiresAt"])),
+		CreatedAt:   strings.TrimSpace(StringValue(item["createdAt"])),
+		Status:      GovernanceTemporaryExceptionStatus(item, now),
+	}
+}
+
+func FilterDeployPolicyViolationsWithExceptions(
+	violations []GovernanceDeployPolicyViolation,
+	exceptions []bson.M,
+) ([]GovernanceDeployPolicyViolation, []GovernancePolicyExceptionSummary) {
+	if len(violations) == 0 || len(exceptions) == 0 {
+		return violations, []GovernancePolicyExceptionSummary{}
+	}
+
+	now := time.Now().UTC()
+	appliedByID := map[string]GovernancePolicyExceptionSummary{}
+	remaining := make([]GovernanceDeployPolicyViolation, 0, len(violations))
+
+	for _, violation := range violations {
+		matched := false
+		for _, exception := range exceptions {
+			if !IsGovernanceTemporaryExceptionActive(exception, now) {
+				continue
+			}
+			if NormalizeGovernanceExceptionPolicy(StringValue(exception["policy"])) != GovernanceExceptionPolicyDeploy {
+				continue
+			}
+			if environment := NormalizeOperationEnvironment(StringValue(exception["environment"])); environment != "" && environment != NormalizeOperationEnvironment(violation.Environment) {
+				continue
+			}
+			if !governanceExceptionCodeMatches(ToStringSlice(exception["codes"]), violation.Code) {
+				continue
+			}
+
+			summary := BuildGovernancePolicyExceptionSummary(exception, now)
+			if summary.ID != "" {
+				appliedByID[summary.ID] = summary
+			}
+			matched = true
+			break
+		}
+		if !matched {
+			remaining = append(remaining, violation)
+		}
+	}
+
+	applied := make([]GovernancePolicyExceptionSummary, 0, len(appliedByID))
+	for _, summary := range appliedByID {
+		applied = append(applied, summary)
+	}
+	sort.Slice(applied, func(i, j int) bool {
+		if applied[i].ExpiresAt == applied[j].ExpiresAt {
+			return applied[i].ID < applied[j].ID
+		}
+		return applied[i].ExpiresAt < applied[j].ExpiresAt
+	})
+
+	return remaining, applied
+}
+
+func governanceExceptionCodeMatches(codes []string, code string) bool {
+	normalizedCode := normalizePolicyIdentifier(code)
+	if normalizedCode == "" {
+		return false
+	}
+	normalizedCodes := NormalizeGovernanceExceptionCodes(codes)
+	if len(normalizedCodes) == 0 {
+		return true
+	}
+	for _, candidate := range normalizedCodes {
+		if candidate == "*" || candidate == normalizedCode {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizePolicyIdentifierList(values []string) []string {

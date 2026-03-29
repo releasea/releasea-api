@@ -66,7 +66,11 @@ func queueRuleDelete(ctx context.Context, rule bson.M, service bson.M, triggered
 	if environment == "" {
 		environment = "prod"
 	}
-	if err := ensureActiveWorkerForEnvironment(ctx, environment, serviceWorkerTags(service)); err != nil {
+	workerRouting, err := resolveServiceWorkerRouting(ctx, environment, service)
+	if err != nil {
+		return err
+	}
+	if err := ensureActiveWorkerForEnvironmentWithCluster(ctx, environment, workerRouting.WorkerTags, workerRouting.PreferredWorkerCluster); err != nil {
 		return err
 	}
 	serviceName := shared.StringValue(service["name"])
@@ -121,9 +125,11 @@ func queueRuleDelete(ctx context.Context, rule bson.M, service bson.M, triggered
 		"requestedBy": triggeredBy,
 		"serviceName": serviceName,
 	}
-	if workerTags := serviceWorkerTags(service); len(workerTags) > 0 {
-		shared.MapPayload(opDoc["payload"])["workerTags"] = workerTags
+	workerRouting, err = resolveServiceWorkerRouting(ctx, environment, service)
+	if err != nil {
+		return err
 	}
+	applyWorkerRoutingToPayload(shared.MapPayload(opDoc["payload"]), workerRouting)
 	if err := shared.InsertOne(ctx, shared.Collection(shared.OperationsCollection), opDoc); err != nil {
 		return fmt.Errorf("failed to queue rule delete")
 	}
@@ -147,7 +153,11 @@ func queueServiceDelete(ctx context.Context, service bson.M, environment, trigge
 	if environment == "" {
 		environment = "prod"
 	}
-	if err := ensureActiveWorkerForEnvironment(ctx, environment, serviceWorkerTags(service)); err != nil {
+	workerRouting, err := resolveServiceWorkerRouting(ctx, environment, service)
+	if err != nil {
+		return err
+	}
+	if err := ensureActiveWorkerForEnvironmentWithCluster(ctx, environment, workerRouting.WorkerTags, workerRouting.PreferredWorkerCluster); err != nil {
 		return err
 	}
 	serviceName := shared.StringValue(service["name"])
@@ -172,9 +182,7 @@ func queueServiceDelete(ctx context.Context, service bson.M, environment, trigge
 		"requestedBy": triggeredBy,
 		"serviceName": serviceName,
 	}
-	if workerTags := serviceWorkerTags(service); len(workerTags) > 0 {
-		shared.MapPayload(opDoc["payload"])["workerTags"] = workerTags
-	}
+	applyWorkerRoutingToPayload(shared.MapPayload(opDoc["payload"]), workerRouting)
 	if err := shared.InsertOne(ctx, shared.Collection(shared.OperationsCollection), opDoc); err != nil {
 		return fmt.Errorf("failed to queue service delete")
 	}

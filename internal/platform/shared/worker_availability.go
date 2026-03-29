@@ -122,22 +122,52 @@ func HasActiveWorkerForEnvironment(ctx context.Context, environment string) (boo
 }
 
 func HasActiveWorkerForEnvironmentAndTags(ctx context.Context, environment string, requiredTags []string) (bool, error) {
-	normalizedEnvironment := NormalizeOperationEnvironment(environment)
-	heartbeatThreshold := time.Now().UTC().Add(-time.Duration(workerStaleSeconds()) * time.Second)
+	return HasActiveWorkerForEnvironmentTagsAndCluster(ctx, environment, requiredTags, "")
+}
 
-	workers, err := FindAll(ctx, Collection(WorkersCollection), bson.M{
+func HasActiveWorkerForEnvironmentTagsAndCluster(ctx context.Context, environment string, requiredTags []string, cluster string) (bool, error) {
+	normalizedEnvironment := NormalizeOperationEnvironment(environment)
+	normalizedCluster := strings.TrimSpace(cluster)
+	heartbeatThreshold := time.Now().UTC().Add(-time.Duration(workerStaleSeconds()) * time.Second)
+	poolControls, err := FindAll(ctx, Collection(WorkerPoolControlsCollection), bson.M{
+		"$or": []bson.M{
+			{"maintenanceEnabled": true},
+			{"drainEnabled": true},
+		},
+	})
+	if err != nil {
+		return false, err
+	}
+	maintenancePools := make(map[string]struct{}, len(poolControls))
+	for _, control := range poolControls {
+		poolID := strings.TrimSpace(StringValue(control["poolId"]))
+		if poolID == "" {
+			continue
+		}
+		maintenancePools[poolID] = struct{}{}
+	}
+
+	filter := bson.M{
 		"status": bson.M{
 			"$in": activeWorkerStatuses,
 		},
 		"lastHeartbeat": bson.M{
 			"$gte": heartbeatThreshold.Format(time.RFC3339),
 		},
-	})
+	}
+	if normalizedCluster != "" {
+		filter["cluster"] = normalizedCluster
+	}
+
+	workers, err := FindAll(ctx, Collection(WorkersCollection), filter)
 	if err != nil {
 		return false, err
 	}
 
 	for _, worker := range workers {
+		if _, ok := maintenancePools[WorkerPoolIDFromWorker(worker)]; ok {
+			continue
+		}
 		if WorkerSatisfiesEnvironmentAndTags(worker, normalizedEnvironment, requiredTags, heartbeatThreshold) {
 			return true, nil
 		}

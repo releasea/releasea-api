@@ -81,7 +81,24 @@ func TestSummarizeWorkerPoolsAggregatesInventoryAndHealth(t *testing.T) {
 		},
 	}
 
-	pools := summarizeWorkerPools(workers, registrations)
+	controls := []bson.M{
+		{
+			"poolId":               "staging|cluster-b|releasea-apps|staging",
+			"maintenanceEnabled":   true,
+			"maintenanceReason":    "Node maintenance",
+			"maintenanceUpdatedAt": now.Format(time.RFC3339),
+			"maintenanceUpdatedBy": "Platform Team",
+		},
+		{
+			"poolId":         "dev|cluster-a|releasea-apps|gpu",
+			"drainEnabled":   true,
+			"drainReason":    "Replacing GPU nodes",
+			"drainUpdatedAt": now.Format(time.RFC3339),
+			"drainUpdatedBy": "Platform Team",
+		},
+	}
+
+	pools := summarizeWorkerPools(workers, registrations, controls)
 	if len(pools) != 3 {
 		t.Fatalf("pool count = %d, want %d", len(pools), 3)
 	}
@@ -128,6 +145,12 @@ func TestSummarizeWorkerPoolsAggregatesInventoryAndHealth(t *testing.T) {
 	if got := devBuild["capacityScore"]; got != 63 {
 		t.Fatalf("dev build capacityScore = %v, want %d", got, 63)
 	}
+	if got := devBuild["saturationPercent"]; got != 50 {
+		t.Fatalf("dev build saturationPercent = %v, want %d", got, 50)
+	}
+	if got := devBuild["saturationState"]; got != "active" {
+		t.Fatalf("dev build saturationState = %v, want %q", got, "active")
+	}
 
 	staging := byID["staging|cluster-b|releasea-apps|staging"]
 	if got := staging["status"]; got != "pending" {
@@ -139,8 +162,25 @@ func TestSummarizeWorkerPoolsAggregatesInventoryAndHealth(t *testing.T) {
 	if got := staging["registrationCount"]; got != 1 {
 		t.Fatalf("staging registrationCount = %v, want %d", got, 1)
 	}
-	if got := staging["capacityState"]; got != "bootstrap" {
-		t.Fatalf("staging capacityState = %v, want %q", got, "bootstrap")
+	if got := staging["capacityState"]; got != "maintenance" {
+		t.Fatalf("staging capacityState = %v, want %q", got, "maintenance")
+	}
+	if got := staging["maintenanceEnabled"]; got != true {
+		t.Fatalf("staging maintenanceEnabled = %v, want true", got)
+	}
+	if got := staging["saturationState"]; got != "maintenance" {
+		t.Fatalf("staging saturationState = %v, want %q", got, "maintenance")
+	}
+
+	devGPU := byID["dev|cluster-a|releasea-apps|gpu"]
+	if got := devGPU["capacityState"]; got != "draining" {
+		t.Fatalf("dev gpu capacityState = %v, want %q", got, "draining")
+	}
+	if got := devGPU["drainEnabled"]; got != true {
+		t.Fatalf("dev gpu drainEnabled = %v, want true", got)
+	}
+	if got := devGPU["saturationState"]; got != "draining" {
+		t.Fatalf("dev gpu saturationState = %v, want %q", got, "draining")
 	}
 }
 
@@ -172,6 +212,8 @@ func TestGetWorkerPoolsReturnsAggregatedPools(t *testing.T) {
 				"availableAgents":       1,
 				"capacityScore":         55,
 				"capacityState":         "constrained",
+				"saturationPercent":     50,
+				"saturationState":       "active",
 				"lastHeartbeat":         time.Now().UTC().Format(time.RFC3339),
 			},
 		}, nil

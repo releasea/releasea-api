@@ -67,10 +67,15 @@ func loadWorkerPools(ctx context.Context) ([]bson.M, error) {
 		return nil, err
 	}
 
-	return summarizeWorkerPools(summarizeWorkers(items), registrations), nil
+	controls, err := shared.FindAll(ctx, shared.Collection(shared.WorkerPoolControlsCollection), bson.M{})
+	if err != nil {
+		return nil, err
+	}
+
+	return summarizeWorkerPools(summarizeWorkers(items), registrations, controls), nil
 }
 
-func summarizeWorkerPools(workers []bson.M, registrations []bson.M) []bson.M {
+func summarizeWorkerPools(workers []bson.M, registrations []bson.M, controls []bson.M) []bson.M {
 	type poolMeta struct {
 		tags       map[string]struct{}
 		namespaces map[string]struct{}
@@ -79,9 +84,17 @@ func summarizeWorkerPools(workers []bson.M, registrations []bson.M) []bson.M {
 	pools := make(map[string]bson.M)
 	metadata := make(map[string]*poolMeta)
 	heartbeats := make(map[string]time.Time)
+	controlByPoolID := make(map[string]bson.M, len(controls))
+	for _, control := range controls {
+		poolID := strings.TrimSpace(shared.StringValue(control["poolId"]))
+		if poolID == "" {
+			continue
+		}
+		controlByPoolID[poolID] = control
+	}
 
 	ensurePool := func(environment string, cluster string, namespacePrefix string, tags []string) bson.M {
-		key := workerPoolKey(environment, cluster, namespacePrefix, tags)
+		key := shared.WorkerPoolID(environment, cluster, namespacePrefix, tags)
 		if pool, ok := pools[key]; ok {
 			return pool
 		}
@@ -151,8 +164,8 @@ func summarizeWorkerPools(workers []bson.M, registrations []bson.M) []bson.M {
 		environment := strings.TrimSpace(shared.StringValue(worker["environment"]))
 		cluster := strings.TrimSpace(shared.StringValue(worker["cluster"]))
 		namespacePrefix := strings.TrimSpace(shared.StringValue(worker["namespacePrefix"]))
-		tags := normalizeWorkerPoolTags(shared.ToStringSlice(worker["tags"]))
-		key := workerPoolKey(environment, cluster, namespacePrefix, tags)
+		tags := shared.NormalizeWorkerPoolTags(shared.ToStringSlice(worker["tags"]))
+		key := shared.WorkerPoolID(environment, cluster, namespacePrefix, tags)
 		pool := ensurePool(environment, cluster, namespacePrefix, tags)
 
 		pool["workerCount"] = shared.IntValue(pool["workerCount"]) + 1
@@ -191,8 +204,8 @@ func summarizeWorkerPools(workers []bson.M, registrations []bson.M) []bson.M {
 		environment := strings.TrimSpace(shared.StringValue(registration["environment"]))
 		cluster := strings.TrimSpace(shared.StringValue(registration["cluster"]))
 		namespacePrefix := strings.TrimSpace(shared.StringValue(registration["namespacePrefix"]))
-		tags := normalizeWorkerPoolTags(shared.ToStringSlice(registration["tags"]))
-		key := workerPoolKey(environment, cluster, namespacePrefix, tags)
+		tags := shared.NormalizeWorkerPoolTags(shared.ToStringSlice(registration["tags"]))
+		key := shared.WorkerPoolID(environment, cluster, namespacePrefix, tags)
 		pool := ensurePool(environment, cluster, namespacePrefix, tags)
 
 		pool["registrationCount"] = shared.IntValue(pool["registrationCount"]) + 1
@@ -224,10 +237,37 @@ func summarizeWorkerPools(workers []bson.M, registrations []bson.M) []bson.M {
 
 		pool["tags"] = tags
 		pool["namespaces"] = namespaces
+		if control, ok := controlByPoolID[key]; ok {
+			maintenanceReason := shared.StringValue(control["maintenanceReason"])
+			if maintenanceReason == "" {
+				maintenanceReason = shared.StringValue(control["reason"])
+			}
+			maintenanceUpdatedAt := shared.StringValue(control["maintenanceUpdatedAt"])
+			if maintenanceUpdatedAt == "" {
+				maintenanceUpdatedAt = shared.StringValue(control["updatedAt"])
+			}
+			maintenanceUpdatedBy := shared.StringValue(control["maintenanceUpdatedBy"])
+			if maintenanceUpdatedBy == "" {
+				maintenanceUpdatedBy = shared.StringValue(control["updatedBy"])
+			}
+			pool["maintenanceEnabled"] = shared.BoolValue(control["maintenanceEnabled"])
+			pool["maintenanceReason"] = maintenanceReason
+			pool["maintenanceUpdatedAt"] = maintenanceUpdatedAt
+			pool["maintenanceUpdatedBy"] = maintenanceUpdatedBy
+			pool["drainEnabled"] = shared.BoolValue(control["drainEnabled"])
+			pool["drainReason"] = shared.StringValue(control["drainReason"])
+			pool["drainUpdatedAt"] = shared.StringValue(control["drainUpdatedAt"])
+			pool["drainUpdatedBy"] = shared.StringValue(control["drainUpdatedBy"])
+		} else {
+			pool["maintenanceEnabled"] = false
+			pool["drainEnabled"] = false
+		}
 		pool["status"] = workerPoolStatus(pool)
 		pool["availableAgents"] = workerPoolAvailableAgents(pool)
 		pool["capacityScore"] = workerPoolCapacityScore(pool)
 		pool["capacityState"] = workerPoolCapacityState(pool)
+		pool["saturationPercent"] = workerPoolSaturationPercent(pool)
+		pool["saturationState"] = workerPoolSaturationState(pool)
 		out = append(out, pool)
 	}
 
@@ -238,33 +278,6 @@ func summarizeWorkerPools(workers []bson.M, registrations []bson.M) []bson.M {
 	})
 
 	return out
-}
-
-func normalizeWorkerPoolTags(tags []string) []string {
-	cleaned := make([]string, 0, len(tags))
-	for _, tag := range tags {
-		trimmed := strings.TrimSpace(tag)
-		if trimmed == "" {
-			continue
-		}
-		cleaned = append(cleaned, trimmed)
-	}
-	cleaned = shared.UniqueStrings(cleaned)
-	sort.Strings(cleaned)
-	return cleaned
-}
-
-func workerPoolKey(environment string, cluster string, namespacePrefix string, tags []string) string {
-	tagKey := "-"
-	if len(tags) > 0 {
-		tagKey = strings.Join(tags, ",")
-	}
-	return strings.Join([]string{
-		strings.TrimSpace(environment),
-		strings.TrimSpace(cluster),
-		strings.TrimSpace(namespacePrefix),
-		tagKey,
-	}, "|")
 }
 
 func workerPoolSortKey(pool bson.M) string {
@@ -343,6 +356,12 @@ func workerPoolCapacityScore(pool bson.M) int {
 }
 
 func workerPoolCapacityState(pool bson.M) string {
+	if shared.BoolValue(pool["maintenanceEnabled"]) {
+		return "maintenance"
+	}
+	if shared.BoolValue(pool["drainEnabled"]) {
+		return "draining"
+	}
 	status := workerPoolStatus(pool)
 	switch {
 	case status == "offline":
@@ -359,5 +378,49 @@ func workerPoolCapacityState(pool bson.M) string {
 		return "constrained"
 	default:
 		return "degraded"
+	}
+}
+
+func workerPoolSaturationPercent(pool bson.M) int {
+	if shared.BoolValue(pool["maintenanceEnabled"]) || shared.BoolValue(pool["drainEnabled"]) {
+		return 0
+	}
+	base := shared.IntValue(pool["onlineAgents"])
+	if base <= 0 {
+		base = shared.IntValue(pool["onlineWorkers"]) + shared.IntValue(pool["busyWorkers"])
+	}
+	if base <= 0 {
+		return 0
+	}
+	used := shared.IntValue(pool["busyWorkers"])
+	if used <= 0 {
+		return 0
+	}
+	if used >= base {
+		return 100
+	}
+	return used * 100 / base
+}
+
+func workerPoolSaturationState(pool bson.M) string {
+	if shared.BoolValue(pool["maintenanceEnabled"]) {
+		return "maintenance"
+	}
+	if shared.BoolValue(pool["drainEnabled"]) {
+		return "draining"
+	}
+	if workerPoolStatus(pool) == "offline" {
+		return "unavailable"
+	}
+	percent := workerPoolSaturationPercent(pool)
+	switch {
+	case percent >= 90:
+		return "saturated"
+	case percent >= 70:
+		return "hot"
+	case percent >= 30:
+		return "active"
+	default:
+		return "idle"
 	}
 }

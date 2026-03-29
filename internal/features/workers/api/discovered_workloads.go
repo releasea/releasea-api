@@ -157,10 +157,17 @@ func toDiscoveredContainers(values []interface{}) []bson.M {
 			continue
 		}
 		out = append(out, bson.M{
-			"name":     name,
-			"image":    image,
-			"ports":    toPositiveIntSlice(shared.ToInterfaceSlice(entry["ports"])),
-			"imported": shared.BoolValue(entry["imported"]),
+			"name":                 name,
+			"image":                image,
+			"ports":                toPositiveIntSlice(shared.ToInterfaceSlice(entry["ports"])),
+			"imported":             shared.BoolValue(entry["imported"]),
+			"healthCheckPath":      strings.TrimSpace(shared.StringValue(entry["healthCheckPath"])),
+			"probes":               toDiscoveredProbes(shared.ToInterfaceSlice(entry["probes"])),
+			"environmentVariables": toDiscoveredEnvironmentVariables(shared.ToInterfaceSlice(entry["environmentVariables"])),
+			"command":              shared.ToStringSlice(entry["command"]),
+			"args":                 shared.ToStringSlice(entry["args"]),
+			"cpuMilli":             shared.IntValue(entry["cpuMilli"]),
+			"memoryMi":             shared.IntValue(entry["memoryMi"]),
 		})
 	}
 	if len(out) == 0 {

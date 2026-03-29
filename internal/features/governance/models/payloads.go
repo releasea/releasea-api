@@ -23,6 +23,7 @@ type DeployPolicyRule struct {
 
 type DeployPolicySettings struct {
 	Enabled bool               `json:"enabled"`
+	DryRun  bool               `json:"dryRun"`
 	Rules   []DeployPolicyRule `json:"rules"`
 }
 
@@ -37,6 +38,15 @@ type GovernanceSettingsPayload struct {
 	DeployPolicy        DeployPolicySettings        `json:"deployPolicy"`
 	RulePublishApproval RulePublishApprovalSettings `json:"rulePublishApproval"`
 	AuditRetentionDays  int                         `json:"auditRetentionDays"`
+}
+
+type CreateTemporaryExceptionPayload struct {
+	Policy      string   `json:"policy"`
+	ServiceID   string   `json:"serviceId"`
+	Environment string   `json:"environment"`
+	Codes       []string `json:"codes"`
+	Reason      string   `json:"reason"`
+	ExpiresAt   string   `json:"expiresAt"`
 }
 
 type CreateApprovalPayload struct {

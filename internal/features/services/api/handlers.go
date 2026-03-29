@@ -181,6 +181,7 @@ func CreateService(c *gin.Context) {
 		payload["managementMode"] = normalized
 	}
 	normalizeServiceWorkerTagsPayload(payload)
+	normalizeServiceWorkerRoutingPreferencesPayload(payload)
 
 	id := "svc-" + uuid.NewString()
 	payload["_id"] = id
@@ -301,6 +302,7 @@ func UpdateService(c *gin.Context) {
 		payload["managementMode"] = normalized
 	}
 	normalizeServiceWorkerTagsPayload(payload)
+	normalizeServiceWorkerRoutingPreferencesPayload(payload)
 	if _, ok := payload["deployTemplateId"]; !ok {
 		if _, hasSource := payload["sourceType"]; hasSource {
 			payload["deployTemplateId"] = resolveDeployTemplateID(payload)
@@ -1062,7 +1064,11 @@ func queueServiceDeployOperation(ctx context.Context, service bson.M, environmen
 		return nil
 	}
 	environment = shared.NormalizeOperationEnvironment(environment)
-	if err := ensureActiveWorkerForEnvironment(ctx, environment, serviceWorkerTags(service)); err != nil {
+	workerRouting, err := resolveServiceWorkerRouting(ctx, environment, service)
+	if err != nil {
+		return err
+	}
+	if err := ensureActiveWorkerForEnvironmentWithCluster(ctx, environment, workerRouting.WorkerTags, workerRouting.PreferredWorkerCluster); err != nil {
 		return err
 	}
 	activeDeploys, err := shared.Collection(shared.DeploysCollection).CountDocuments(ctx, bson.M{
@@ -1125,9 +1131,7 @@ func queueServiceDeployOperation(ctx context.Context, service bson.M, environmen
 		"requestedBy": triggeredBy,
 		"serviceName": serviceName,
 	}
-	if workerTags := serviceWorkerTags(service); len(workerTags) > 0 {
-		shared.MapPayload(opDoc["payload"])["workerTags"] = workerTags
-	}
+	applyWorkerRoutingToPayload(shared.MapPayload(opDoc["payload"]), workerRouting)
 	if err := shared.InsertOne(ctx, shared.Collection(shared.OperationsCollection), opDoc); err != nil {
 		return err
 	}
@@ -1778,7 +1782,10 @@ func GetServiceGovernanceEvents(c *gin.Context) {
 		"action": bson.M{
 			"$in": []string{
 				"governance.deploy_policy.blocked",
+				"governance.deploy_policy.exception_applied",
 				"governance.rule_publish_policy.blocked",
+				"governance.exception.created",
+				"governance.exception.revoked",
 			},
 		},
 		"$or": []bson.M{

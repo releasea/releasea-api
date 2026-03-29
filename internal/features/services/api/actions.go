@@ -58,7 +58,12 @@ func CreateDeploy(c *gin.Context) {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to check deploy queue")
 		return
 	}
-	if !ensureWorkerAvailabilityOrRespond(c, ctx, request.Environment, serviceWorkerTags(service)) {
+	workerRouting, err := resolveServiceWorkerRouting(ctx, request.Environment, service)
+	if err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to resolve worker routing")
+		return
+	}
+	if !ensureWorkerAvailabilityOrRespondWithCluster(c, ctx, request.Environment, workerRouting.WorkerTags, workerRouting.PreferredWorkerCluster) {
 		return
 	}
 
@@ -77,7 +82,7 @@ func CreateDeploy(c *gin.Context) {
 		return
 	}
 
-	if maybeRespondDeployApprovalRequired(c, ctx, request, resolution, serviceName, triggeredBy, strategyType, serviceWorkerTags(service), resources, resourcesYAML) {
+	if maybeRespondDeployApprovalRequired(c, ctx, request, resolution, serviceName, triggeredBy, strategyType, workerRouting.WorkerTags, resources, resourcesYAML) {
 		return
 	}
 
@@ -94,7 +99,7 @@ func CreateDeploy(c *gin.Context) {
 		request,
 		resolution,
 		strategyType,
-		serviceWorkerTags(service),
+		workerRouting,
 		serviceName,
 		triggeredBy,
 		deployID,
@@ -171,7 +176,12 @@ func PromoteCanary(c *gin.Context) {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to check promote queue")
 		return
 	}
-	if !ensureWorkerAvailabilityOrRespond(c, ctx, request.Environment, serviceWorkerTags(service)) {
+	workerRouting, err := resolveServiceWorkerRouting(ctx, request.Environment, service)
+	if err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to resolve worker routing")
+		return
+	}
+	if !ensureWorkerAvailabilityOrRespondWithCluster(c, ctx, request.Environment, workerRouting.WorkerTags, workerRouting.PreferredWorkerCluster) {
 		return
 	}
 
@@ -187,7 +197,7 @@ func PromoteCanary(c *gin.Context) {
 	}
 
 	requestedBy := resolveRequestedByOrSystem(c)
-	opDoc, operationID, err := persistPromoteCanaryOperation(ctx, request.ServiceID, request.Environment, serviceWorkerTags(service), shared.StringValue(service["name"]), requestedBy, now)
+	opDoc, operationID, err := persistPromoteCanaryOperation(ctx, request.ServiceID, request.Environment, workerRouting, shared.StringValue(service["name"]), requestedBy, now)
 	if err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to queue promote")
 		return

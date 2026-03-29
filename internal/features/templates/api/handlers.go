@@ -20,7 +20,7 @@ func ListTemplates(c *gin.Context) {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to load templates")
 		return
 	}
-	c.JSON(http.StatusOK, items)
+	c.JSON(http.StatusOK, enrichTemplateDocuments(items))
 }
 
 func GetTemplate(c *gin.Context) {
@@ -36,7 +36,7 @@ func GetTemplate(c *gin.Context) {
 		shared.RespondError(c, http.StatusNotFound, "Template not found")
 		return
 	}
-	c.JSON(http.StatusOK, item)
+	c.JSON(http.StatusOK, enrichTemplateDocument(item))
 }
 
 func CreateTemplate(c *gin.Context) {
@@ -64,7 +64,7 @@ func CreateTemplate(c *gin.Context) {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to create template")
 		return
 	}
-	c.JSON(http.StatusOK, normalized)
+	c.JSON(http.StatusOK, enrichTemplateDocument(normalized))
 }
 
 func UpdateTemplate(c *gin.Context) {
@@ -113,7 +113,37 @@ func UpdateTemplate(c *gin.Context) {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to load template")
 		return
 	}
-	c.JSON(http.StatusOK, updated)
+	c.JSON(http.StatusOK, enrichTemplateDocument(updated))
+}
+
+func VerifyTemplates(c *gin.Context) {
+	var payload interface{}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		shared.RespondError(c, http.StatusBadRequest, "Invalid template payload")
+		return
+	}
+
+	rawTemplates := make([]interface{}, 0, 4)
+	switch typed := payload.(type) {
+	case []interface{}:
+		rawTemplates = typed
+	case map[string]interface{}:
+		rawTemplates = append(rawTemplates, typed)
+	default:
+		shared.RespondError(c, http.StatusBadRequest, "Template payload must be an object or array")
+		return
+	}
+
+	verified := make([]bson.M, 0, len(rawTemplates))
+	for _, raw := range rawTemplates {
+		template := shared.MapPayload(raw)
+		if len(template) == 0 {
+			continue
+		}
+		verified = append(verified, verifyTemplateCandidate(template))
+	}
+
+	c.JSON(http.StatusOK, verified)
 }
 
 func DeleteTemplate(c *gin.Context) {

@@ -28,6 +28,51 @@ type serviceGitOpsDriftStatus struct {
 	ActualHash   string `json:"actualHash,omitempty"`
 }
 
+var recordServiceGitOpsDriftStatusChange = func(ctx context.Context, service bson.M, drift serviceGitOpsDriftStatus) {
+	serviceID := strings.TrimSpace(shared.StringValue(service["id"]))
+	if serviceID == "" {
+		return
+	}
+
+	items, err := shared.FindAllSorted(
+		ctx,
+		shared.Collection(shared.PlatformAuditCollection),
+		bson.M{
+			"resourceType": "service",
+			"resourceId":   serviceID,
+			"action":       "service.gitops_drift.state_changed",
+		},
+		bson.M{"createdAt": -1},
+	)
+	if err == nil && len(items) > 0 {
+		metadata := shared.MapPayload(items[0]["metadata"])
+		if shared.StringValue(metadata["state"]) == drift.State &&
+			shared.StringValue(metadata["expectedHash"]) == drift.ExpectedHash &&
+			shared.StringValue(metadata["actualHash"]) == drift.ActualHash &&
+			shared.StringValue(metadata["filePath"]) == drift.FilePath {
+			return
+		}
+	}
+
+	shared.RecordAuditEvent(ctx, shared.AuditEvent{
+		Action:       "service.gitops_drift.state_changed",
+		ResourceType: "service",
+		ResourceID:   serviceID,
+		Status:       drift.State,
+		Source:       "gitops",
+		Message:      drift.Message,
+		Metadata: map[string]interface{}{
+			"name":         shared.StringValue(service["name"]),
+			"state":        drift.State,
+			"repoUrl":      drift.RepoURL,
+			"baseBranch":   drift.BaseBranch,
+			"filePath":     drift.FilePath,
+			"expectedHash": drift.ExpectedHash,
+			"actualHash":   drift.ActualHash,
+		},
+	})
+}
+
 var checkServiceDesiredStateDrift = func(
 	ctx context.Context,
 	service bson.M,
@@ -149,17 +194,26 @@ func GetServiceGitOpsDrift(c *gin.Context) {
 	}
 
 	baseBranch := defaultGitOpsBaseBranch(service, c.Query("baseBranch"))
-	explicitFilePath := strings.TrimSpace(c.Query("filePath"))
-	filePath := defaultGitOpsFilePath(shared.StringValue(service["name"]), explicitFilePath)
-	drift, err := checkServiceDesiredStateDrift(ctx, service, rules, baseBranch, filePath)
-	if err == nil && explicitFilePath == "" && drift.State == "missing" {
-		argocdFilePath := defaultGitOpsArgoCDDesiredStateFilePath(shared.StringValue(service["name"]))
-		drift, err = checkServiceDesiredStateDrift(ctx, service, rules, baseBranch, argocdFilePath)
+	driftPaths := resolveServiceGitOpsDriftPaths(service, c.Query("filePath"))
+	if len(driftPaths) == 0 {
+		shared.RespondError(c, http.StatusInternalServerError, "No GitOps layout paths are available for drift checks")
+		return
+	}
+
+	drift, err := checkServiceDesiredStateDrift(ctx, service, rules, baseBranch, driftPaths[0])
+	if err == nil && len(driftPaths) > 1 && drift.State == "missing" {
+		for _, path := range driftPaths[1:] {
+			drift, err = checkServiceDesiredStateDrift(ctx, service, rules, baseBranch, path)
+			if err != nil || drift.State != "missing" {
+				break
+			}
+		}
 	}
 	if err != nil {
 		shared.RespondError(c, http.StatusBadGateway, err.Error())
 		return
 	}
+	recordServiceGitOpsDriftStatusChange(ctx, service, drift)
 	c.JSON(http.StatusOK, drift)
 }
 

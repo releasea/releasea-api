@@ -16,7 +16,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
-	"gopkg.in/yaml.v3"
 )
 
 type gitOpsPullRequestPayload struct {
@@ -66,10 +65,12 @@ var openServiceDesiredStatePullRequest = func(
 		return nil, errors.New("service repository URL is required for GitOps pull requests")
 	}
 
-	document, warnings := buildServiceDesiredStateDocument(service, rules, nowForDesiredState())
-	rendered, err := yaml.Marshal(document)
+	exportData, err := buildServiceDesiredStateExport(service, rules)
 	if err != nil {
 		return nil, fmt.Errorf("failed to render desired state: %w", err)
+	}
+	if exportData.Validation.Status == "invalid" {
+		return nil, serviceDesiredStateValidationError{Validation: exportData.Validation}
 	}
 
 	request := scmmodels.DesiredStatePullRequestRequest{
@@ -77,10 +78,10 @@ var openServiceDesiredStatePullRequest = func(
 		BaseBranch:    defaultGitOpsBaseBranch(service, payload.BaseBranch),
 		BranchName:    buildGitOpsBranchName(shared.StringValue(service["name"])),
 		FilePath:      defaultGitOpsFilePath(shared.StringValue(service["name"]), payload.FilePath),
-		Content:       string(rendered),
+		Content:       exportData.YAML,
 		CommitMessage: defaultGitOpsCommitMessage(shared.StringValue(service["name"]), payload.CommitMessage),
 		Title:         defaultGitOpsPRTitle(shared.StringValue(service["name"]), payload.Title),
-		Body:          defaultGitOpsPRBody(service, warnings, payload.Body),
+		Body:          defaultGitOpsPRBody(service, exportData.Warnings, payload.Body),
 	}
 	return runtime.CreateDesiredStatePullRequest(ctx, token, request)
 }
@@ -121,6 +122,19 @@ func CreateServiceGitOpsPullRequest(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Service repository URL is required for GitOps pull requests")
 		return
 	}
+	if err := ensureGitOpsRepositoryPolicyReady(ctx, service); err != nil {
+		var repositoryPolicyErr serviceGitOpsRepositoryPolicyError
+		if errors.As(err, &repositoryPolicyErr) {
+			c.JSON(http.StatusConflict, gin.H{
+				"message": err.Error(),
+				"code":    "GITOPS_REPOSITORY_POLICY_INVALID",
+				"policy":  repositoryPolicyErr.Check,
+			})
+			return
+		}
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to evaluate GitOps repository policy")
+		return
+	}
 
 	rules, err := findRulesForDesiredState(ctx, serviceID)
 	if err != nil {
@@ -130,6 +144,15 @@ func CreateServiceGitOpsPullRequest(c *gin.Context) {
 
 	pr, err := openServiceDesiredStatePullRequest(ctx, service, rules, payload)
 	if err != nil {
+		var validationErr serviceDesiredStateValidationError
+		if errors.As(err, &validationErr) {
+			c.JSON(http.StatusConflict, gin.H{
+				"message":    validationErr.Validation.Summary,
+				"code":       "GITOPS_DESIRED_STATE_INVALID",
+				"validation": validationErr.Validation,
+			})
+			return
+		}
 		shared.RespondError(c, http.StatusBadGateway, err.Error())
 		return
 	}

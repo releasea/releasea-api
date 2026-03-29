@@ -33,6 +33,7 @@ type Service struct {
 	HealthCheckPath        string
 	DeployTemplateID       string
 	SecretProviderID       string
+	AutoDeployEnvironment  string
 	WorkerTags             []string
 	PreferredWorkerCluster string
 	PreferredWorkerRegion  string
@@ -82,6 +83,7 @@ func ServiceFromBSON(doc bson.M) Service {
 		HealthCheckPath:        shared.StringValue(doc["healthCheckPath"]),
 		DeployTemplateID:       shared.StringValue(doc["deployTemplateId"]),
 		SecretProviderID:       shared.StringValue(doc["secretProviderId"]),
+		AutoDeployEnvironment:  shared.StringValue(doc["autoDeployEnvironment"]),
 		WorkerTags:             shared.NormalizeWorkerTags(shared.ToStringSlice(doc["workerTags"])),
 		PreferredWorkerCluster: shared.StringValue(doc["preferredWorkerCluster"]),
 		PreferredWorkerRegion:  shared.StringValue(doc["preferredWorkerRegion"]),
@@ -136,6 +138,7 @@ func (s Service) ToWorkerPayload() map[string]interface{} {
 		"environment":            s.Environment,
 		"deployTemplateId":       s.DeployTemplateID,
 		"secretProviderId":       s.SecretProviderID,
+		"autoDeployEnvironment":  s.AutoDeployEnvironment,
 		"workerTags":             s.WorkerTags,
 		"preferredWorkerCluster": s.PreferredWorkerCluster,
 		"preferredWorkerRegion":  s.PreferredWorkerRegion,

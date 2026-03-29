@@ -393,6 +393,8 @@ func Heartbeat(c *gin.Context) {
 		DesiredAgents           int      `json:"desiredAgents"`
 		DeploymentName          string   `json:"deploymentName"`
 		DeploymentNamespace     string   `json:"deploymentNamespace"`
+		DiscoveredWorkloadsHash string   `json:"discoveredWorkloadsHash"`
+		DiscoveredWorkloadsMode string   `json:"discoveredWorkloadsMode"`
 		DiscoveredWorkloads     []bson.M `json:"discoveredWorkloads"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
@@ -466,6 +468,12 @@ func Heartbeat(c *gin.Context) {
 	}
 	if payload.DeploymentNamespace != "" {
 		workerDoc["deploymentNamespace"] = payload.DeploymentNamespace
+	}
+	if payload.DiscoveredWorkloadsHash != "" {
+		workerDoc["discoveredWorkloadsHash"] = payload.DiscoveredWorkloadsHash
+	}
+	if payload.DiscoveredWorkloadsMode != "" {
+		workerDoc["discoveredWorkloadsMode"] = payload.DiscoveredWorkloadsMode
 	}
 	if payload.DiscoveredWorkloads != nil {
 		workerDoc["discoveredWorkloads"] = payload.DiscoveredWorkloads

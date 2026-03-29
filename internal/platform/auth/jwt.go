@@ -406,6 +406,9 @@ func workerJWTAllowed(method, path string) bool {
 		if strings.Contains(path, "/rules/") && strings.HasSuffix(path, "/logs") {
 			return true
 		}
+		if strings.Contains(path, "/operations/recover-stale-claims") {
+			return true
+		}
 		if strings.Contains(path, "/operations/") && strings.HasSuffix(path, "/status") {
 			return true
 		}
@@ -451,6 +454,9 @@ func isWorkerOnlyPath(method, path string) bool {
 			return true
 		}
 		if strings.Contains(path, "/workers/services/") && strings.HasSuffix(path, "/blue-green/primary") {
+			return true
+		}
+		if strings.Contains(path, "/operations/recover-stale-claims") {
 			return true
 		}
 		if strings.Contains(path, "/operations/") && strings.HasSuffix(path, "/status") {

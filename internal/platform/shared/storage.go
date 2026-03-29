@@ -35,7 +35,7 @@ func FindAll(ctx context.Context, col *mongo.Collection, filter bson.M) ([]bson.
 	return results, nil
 }
 
-func FindAllSorted(ctx context.Context, col *mongo.Collection, filter bson.M, sort bson.M) ([]bson.M, error) {
+func FindAllSorted(ctx context.Context, col *mongo.Collection, filter bson.M, sort interface{}) ([]bson.M, error) {
 	opts := options.Find().SetSort(sort)
 	cursor, err := col.Find(ctx, filter, opts)
 	if err != nil {

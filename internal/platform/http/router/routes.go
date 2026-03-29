@@ -52,7 +52,7 @@ func SetupRoutes(r *gin.Engine) {
 	corsConfig := cors.Config{
 		AllowOrigins:     corsOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Requested-With", "X-Request-Id", "X-Request-ID", "X-Correlation-ID", "X-CSRF-Token", "Idempotency-Key"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Requested-With", "X-Request-Id", "X-Request-ID", "X-Correlation-ID", "X-CSRF-Token", "Idempotency-Key", "Last-Event-ID"},
 		ExposeHeaders:    []string{"Authorization"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
@@ -74,6 +74,7 @@ func SetupRoutes(r *gin.Engine) {
 	r.Use(cors.New(corsConfig))
 
 	v1 := r.Group("/api/v1")
+	v1.Use(platformsecurity.CorrelationContextMiddleware())
 	v1.Use(platformsecurity.RequiredBrowserHeadersMiddleware())
 	registerPublicRoutes(v1)
 
@@ -226,6 +227,7 @@ func registerRuleDeployRoutes(rg *gin.RouterGroup) {
 func registerObservabilityRoutes(rg *gin.RouterGroup) {
 	rg.GET("/logs", observability.GetLogs)
 	rg.GET("/observability/health", observability.ObservabilityHealth)
+	rg.GET("/observability/control-plane", observability.GetControlPlaneMetrics)
 }
 
 func registerCredentialsRoutes(rg *gin.RouterGroup) {
@@ -335,5 +337,6 @@ func registerAuditRoutes(rg *gin.RouterGroup) {
 func registerOperationsRoutes(rg *gin.RouterGroup) {
 	rg.GET("/operations", operations.GetOperations)
 	rg.GET("/operations/:id", operations.GetOperation)
+	rg.POST("/operations/recover-stale-claims", operations.RecoverStaleOperationClaims)
 	rg.POST("/operations/:id/status", operations.UpdateOperationStatus)
 }

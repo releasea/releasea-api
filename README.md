@@ -57,6 +57,8 @@ Common targets:
 | Variable | Description | Default |
 |---|---|---|
 | `JWT_SECRET` | Access token signing secret | `change-me` |
+| `CREDENTIAL_ENCRYPTION_KEY` | Base64-encoded 32-byte AES key used to encrypt stored SCM, registry, and OIDC secrets | _(required for secret writes)_ |
+| `IDEMPOTENCY_BACKEND` | Idempotency storage; use `mongo` when the API has multiple replicas | `memory` |
 | `JWT_TTL_MINUTES` | Access token TTL (minutes) | `720` |
 | `JWT_REFRESH_SECRET` | Refresh token signing secret (falls back to `JWT_SECRET` when empty) | _(empty)_ |
 | `JWT_REFRESH_TTL_HOURS` | Refresh token TTL (hours) | `720` |
@@ -91,6 +93,12 @@ Behavior summary:
 | `DEFAULT_ADMIN_PASSWORD` | Default admin password | `releasea` |
 | `ALLOW_USER_SIGNUP` | Enables public sign-up endpoint | `false` |
 | `KEEP_ADDITIONAL_USERS` | Keeps extra users and profiles during bootstrap identity reconciliation | `false` |
+| `PASSWORD_RESET_DEV_EXPOSE_TOKEN` | Returns reset tokens in the HTTP response for isolated local development only | `false` |
+| `PASSWORD_RESET_PUBLIC_URL` | Absolute Console URL used in password-reset emails | `http://localhost:8080/auth` |
+| `PASSWORD_RESET_SMTP_ADDRESS` | SMTP server in `host:port` format | _(empty)_ |
+| `PASSWORD_RESET_SMTP_FROM` | Sender address for password-reset emails | _(empty)_ |
+| `PASSWORD_RESET_SMTP_USERNAME` | Optional SMTP username | _(empty)_ |
+| `PASSWORD_RESET_SMTP_PASSWORD` | Optional SMTP password | _(empty)_ |
 
 ### Queue and Worker Validation
 

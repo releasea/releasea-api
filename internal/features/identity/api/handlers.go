@@ -3,6 +3,7 @@ package identity
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"releaseaapi/internal/platform/shared"
 
@@ -19,18 +20,19 @@ func GetIdpConfig(c *gin.Context) {
 		shared.RespondError(c, http.StatusNotFound, "Identity provider config not found")
 		return
 	}
-	c.JSON(http.StatusOK, config)
+	decoded, err := decodeIDPConfig(config)
+	if err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to decode identity provider config")
+		return
+	}
+	decoded.OIDC.ClientSecret = ""
+	c.JSON(http.StatusOK, decoded)
 }
 
 func UpdateIdpConfig(c *gin.Context) {
 	var payload idpConfig
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
-		return
-	}
-	payload.normalize()
-	if err := payload.validate(); err != nil {
-		shared.RespondError(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
@@ -40,10 +42,35 @@ func UpdateIdpConfig(c *gin.Context) {
 		shared.RespondError(c, http.StatusNotFound, "Identity provider config not found")
 		return
 	}
+	if strings.TrimSpace(payload.OIDC.ClientSecret) == "" {
+		existing, decodeErr := decodeIDPConfig(config)
+		if decodeErr != nil {
+			shared.RespondError(c, http.StatusInternalServerError, "Failed to decode identity provider config")
+			return
+		}
+		payload.OIDC.ClientSecret, decodeErr = shared.DecryptSensitiveValue(existing.OIDC.ClientSecret)
+		if decodeErr != nil {
+			shared.RespondError(c, http.StatusInternalServerError, "Failed to decrypt identity provider config")
+			return
+		}
+	}
+	payload.normalize()
+	if err := payload.validate(); err != nil {
+		shared.RespondError(c, http.StatusBadRequest, err.Error())
+		return
+	}
 	id, _ := config["_id"].(string)
 	if id == "" {
 		shared.RespondError(c, http.StatusNotFound, "Identity provider config not found")
 		return
+	}
+	responsePayload := payload
+	if payload.OIDC.ClientSecret != "" {
+		payload.OIDC.ClientSecret, err = shared.EncryptSensitiveValue(payload.OIDC.ClientSecret)
+		if err != nil {
+			shared.RespondError(c, http.StatusServiceUnavailable, err.Error())
+			return
+		}
 	}
 	document, err := payload.document()
 	if err != nil {
@@ -54,8 +81,8 @@ func UpdateIdpConfig(c *gin.Context) {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to update identity config")
 		return
 	}
-	updated, _ := shared.FindOne(ctx, shared.Collection(shared.IdpConfigCollection), bson.M{"_id": id})
-	c.JSON(http.StatusOK, updated)
+	responsePayload.OIDC.ClientSecret = ""
+	c.JSON(http.StatusOK, responsePayload)
 }
 
 func GetIdpConnections(c *gin.Context) {

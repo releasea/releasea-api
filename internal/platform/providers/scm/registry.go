@@ -7,8 +7,8 @@ import (
 	"slices"
 	"strings"
 
-	scmmodels "releaseaapi/internal/features/scm/models"
 	platformmodels "releaseaapi/internal/platform/models"
+	scmmodels "releaseaapi/internal/platform/models"
 )
 
 const (

@@ -1,12 +1,18 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"log"
+	"net/http"
 	"os"
+	"os/signal"
 	"releaseaapi/internal/platform/bootstrap"
 	"releaseaapi/internal/platform/config"
 	"releaseaapi/internal/platform/http/router"
 	mongostore "releaseaapi/internal/platform/storage/mongo"
+	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
@@ -38,9 +44,19 @@ func main() {
 
 	// Initialize Mongo (fatal if it fails)
 	mongostore.Mongo()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := mongostore.Disconnect(ctx); err != nil {
+			log.Printf("failed to disconnect MongoDB: %v", err)
+		}
+	}()
 
 	// Ensure required initial data
 	bootstrap.Setup(cfg)
+	if err := bootstrap.EnsureIndexes(context.Background()); err != nil {
+		log.Fatalf("failed to ensure database indexes: %v", err)
+	}
 
 	// Start the Gin API
 	r := gin.New()
@@ -49,5 +65,31 @@ func main() {
 	}
 	r.Use(gin.Logger(), gin.Recovery())
 	router.SetupRoutes(r)
-	r.Run(":" + cfg.Port)
+	server := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           r,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	serverErrors := make(chan error, 1)
+	go func() {
+		serverErrors <- server.ListenAndServe()
+	}()
+
+	shutdownContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	select {
+	case err := <-serverErrors:
+		if !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("API server failed: %v", err)
+		}
+	case <-shutdownContext.Done():
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			log.Printf("API server shutdown failed: %v", err)
+		}
+	}
 }

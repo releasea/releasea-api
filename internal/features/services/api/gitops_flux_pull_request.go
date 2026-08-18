@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	scmmodels "releaseaapi/internal/features/scm/models"
+	scmmodels "releaseaapi/internal/platform/models"
 	scmproviders "releaseaapi/internal/platform/providers/scm"
 	"releaseaapi/internal/platform/shared"
 
@@ -133,7 +133,7 @@ func CreateServiceFluxGitOpsPullRequest(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Service repository URL is required for Flux GitOps pull requests")
 		return
 	}
-	if err := ensureGitOpsRepositoryPolicyReady(ctx, service); err != nil {
+	if err := ensureGitOpsRepositoryPolicyReadyForPullRequest(ctx, service); err != nil {
 		var repositoryPolicyErr serviceGitOpsRepositoryPolicyError
 		if errors.As(err, &repositoryPolicyErr) {
 			c.JSON(http.StatusConflict, gin.H{
@@ -169,7 +169,7 @@ func CreateServiceFluxGitOpsPullRequest(c *gin.Context) {
 	}
 
 	actorID, actorName, actorRole := shared.AuditActorFromContext(c)
-	shared.RecordAuditEvent(ctx, shared.AuditEvent{
+	recordServiceGitOpsAudit(ctx, shared.AuditEvent{
 		Action:       "service.gitops_flux_pr.create",
 		ResourceType: "service",
 		ResourceID:   serviceID,

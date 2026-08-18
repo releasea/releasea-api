@@ -18,6 +18,7 @@ func TestGetServiceGitOpsDriftReturnsDriftStatus(t *testing.T) {
 	previousFindService := findServiceForDesiredState
 	previousFindRules := findRulesForDesiredState
 	previousCheck := checkServiceDesiredStateDrift
+	previousRecord := recordServiceGitOpsDriftStatusChange
 	findServiceForDesiredState = func(context.Context, string) (bson.M, error) {
 		return bson.M{
 			"id":             "svc-1",
@@ -49,10 +50,12 @@ func TestGetServiceGitOpsDriftReturnsDriftStatus(t *testing.T) {
 			FilePath:   filePath,
 		}, nil
 	}
+	recordServiceGitOpsDriftStatusChange = func(context.Context, bson.M, serviceGitOpsDriftStatus) {}
 	defer func() {
 		findServiceForDesiredState = previousFindService
 		findRulesForDesiredState = previousFindRules
 		checkServiceDesiredStateDrift = previousCheck
+		recordServiceGitOpsDriftStatusChange = previousRecord
 	}()
 
 	recorder := httptest.NewRecorder()
@@ -82,6 +85,7 @@ func TestGetServiceGitOpsDriftFallsBackToArgoCDStarterPath(t *testing.T) {
 	previousFindService := findServiceForDesiredState
 	previousFindRules := findRulesForDesiredState
 	previousCheck := checkServiceDesiredStateDrift
+	previousRecord := recordServiceGitOpsDriftStatusChange
 	findServiceForDesiredState = func(context.Context, string) (bson.M, error) {
 		return bson.M{
 			"id":             "svc-1",
@@ -119,10 +123,12 @@ func TestGetServiceGitOpsDriftFallsBackToArgoCDStarterPath(t *testing.T) {
 			FilePath:   filePath,
 		}, nil
 	}
+	recordServiceGitOpsDriftStatusChange = func(context.Context, bson.M, serviceGitOpsDriftStatus) {}
 	defer func() {
 		findServiceForDesiredState = previousFindService
 		findRulesForDesiredState = previousFindRules
 		checkServiceDesiredStateDrift = previousCheck
+		recordServiceGitOpsDriftStatusChange = previousRecord
 	}()
 
 	recorder := httptest.NewRecorder()

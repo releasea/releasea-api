@@ -97,7 +97,9 @@ func splitAndTrim(value string) []string {
 }
 
 func registerPublicRoutes(rg *gin.RouterGroup) {
-	rg.GET("/health", shared.Health)
+	rg.GET("/health", shared.Readiness)
+	rg.GET("/health/live", shared.Health)
+	rg.GET("/health/ready", shared.Readiness)
 	authGroup := rg.Group("/auth")
 	authGroup.Use(platformauth.AuthRateLimitMiddleware())
 	authGroup.GET("/csrf", auth.CSRFToken)
@@ -147,48 +149,48 @@ func registerWorkerRoutes(rg *gin.RouterGroup) {
 	rg.GET("/workers", workers.GetWorkers)
 	rg.GET("/workers/pools", workers.GetWorkerPools)
 	rg.GET("/workers/pool-control", workers.GetCurrentWorkerPoolControl)
-	rg.POST("/workers/pools/:id/maintenance", workers.SetWorkerPoolMaintenance)
-	rg.POST("/workers/pools/:id/drain", workers.SetWorkerPoolDrain)
+	rg.POST("/workers/pools/:id/maintenance", platformauth.RequireRoles("admin"), workers.SetWorkerPoolMaintenance)
+	rg.POST("/workers/pools/:id/drain", platformauth.RequireRoles("admin"), workers.SetWorkerPoolDrain)
 	rg.GET("/workers/discovered-workloads", workers.GetDiscoveredWorkloads)
-	rg.PUT("/workers/:id", workers.UpdateWorker)
-	rg.DELETE("/workers/:id", workers.DeleteWorker)
-	rg.POST("/workers/:id/restart", workers.RestartWorker)
+	rg.PUT("/workers/:id", platformauth.RequireRoles("admin"), workers.UpdateWorker)
+	rg.DELETE("/workers/:id", platformauth.RequireRoles("admin"), workers.DeleteWorker)
+	rg.POST("/workers/:id/restart", platformauth.RequireRoles("admin"), workers.RestartWorker)
 	rg.GET("/workers/registrations", workers.GetWorkerRegistrations)
-	rg.POST("/workers/registrations", workers.CreateWorkerRegistration)
-	rg.DELETE("/workers/registrations/:id", workers.DeleteWorkerRegistration)
+	rg.POST("/workers/registrations", platformauth.RequireRoles("admin"), workers.CreateWorkerRegistration)
+	rg.DELETE("/workers/registrations/:id", platformauth.RequireRoles("admin"), workers.DeleteWorkerRegistration)
 	rg.POST("/workers/builds", workers.RegisterBuild)
 }
 
 func registerTeamRoutes(rg *gin.RouterGroup) {
 	rg.GET("/teams", teams.GetTeams)
-	rg.POST("/teams", teams.CreateTeam)
-	rg.PUT("/teams/:id", teams.UpdateTeam)
-	rg.DELETE("/teams/:id", teams.DeleteTeam)
+	rg.POST("/teams", platformauth.RequireRoles("admin"), teams.CreateTeam)
+	rg.PUT("/teams/:id", platformauth.RequireRoles("admin"), teams.UpdateTeam)
+	rg.DELETE("/teams/:id", platformauth.RequireRoles("admin"), teams.DeleteTeam)
 }
 
 func registerProjectRoutes(rg *gin.RouterGroup) {
 	rg.GET("/projects", projects.GetProjects)
-	rg.POST("/projects", projects.CreateProject)
-	rg.DELETE("/projects/:id", projects.DeleteProject)
-	rg.PUT("/projects/:id", projects.UpdateProject)
+	rg.POST("/projects", platformauth.RequireRoles("admin", "developer"), projects.CreateProject)
+	rg.DELETE("/projects/:id", platformauth.RequireRoles("admin", "developer"), projects.DeleteProject)
+	rg.PUT("/projects/:id", platformauth.RequireRoles("admin", "developer"), projects.UpdateProject)
 }
 
 func registerServiceRoutes(rg *gin.RouterGroup) {
 	rg.GET("/services", services.GetServices)
 	rg.GET("/services/status", services.GetServicesStatusSnapshot)
 	rg.GET("/services/status/stream", services.StreamServicesStatus)
-	rg.POST("/services", services.CreateService)
+	rg.POST("/services", platformauth.RequireRoles("admin", "developer"), services.CreateService)
 	rg.GET("/services/:id", services.GetService)
 	rg.GET("/services/:id/status", services.GetServiceStatusSnapshot)
 	rg.GET("/services/:id/status/stream", services.StreamServiceStatus)
-	rg.PUT("/services/:id", services.UpdateService)
-	rg.DELETE("/services/:id", services.DeleteService)
-	rg.POST("/services/:id/rules", rules.CreateServiceRule)
+	rg.PUT("/services/:id", platformauth.RequireRoles("admin", "developer"), services.UpdateService)
+	rg.DELETE("/services/:id", platformauth.RequireRoles("admin", "developer"), services.DeleteService)
+	rg.POST("/services/:id/rules", platformauth.RequireRoles("admin", "developer"), rules.CreateServiceRule)
 	rg.GET("/services/:id/metrics", services.GetServiceMetrics)
 	rg.GET("/services/:id/logs", services.GetServiceLogs)
 	rg.GET("/services/:id/pods", services.GetServicePods)
-	rg.POST("/services/:id/deploys", platformsecurity.RequireIdempotencyKey(), services.CreateDeploy)
-	rg.POST("/services/:id/promote-canary", platformsecurity.RequireIdempotencyKey(), services.PromoteCanary)
+	rg.POST("/services/:id/deploys", platformauth.RequireRoles("admin", "developer"), platformsecurity.RequireIdempotencyKey(), services.CreateDeploy)
+	rg.POST("/services/:id/promote-canary", platformauth.RequireRoles("admin", "developer"), platformsecurity.RequireIdempotencyKey(), services.PromoteCanary)
 	rg.GET("/services/:id/builds", services.GetServiceBuilds)
 	rg.GET("/services/:id/governance-events", services.GetServiceGovernanceEvents)
 	rg.GET("/services/:id/deploy-policy-check", services.GetServiceDeployPolicyCheck)
@@ -198,9 +200,9 @@ func registerServiceRoutes(rg *gin.RouterGroup) {
 	rg.GET("/services/:id/gitops/repository-policy-check", services.GetServiceGitOpsRepositoryPolicyCheck)
 	rg.GET("/services/:id/gitops/drift", services.GetServiceGitOpsDrift)
 	rg.GET("/services/:id/gitops/timeline", services.GetServiceGitOpsTimeline)
-	rg.POST("/services/:id/gitops/pull-requests", services.CreateServiceGitOpsPullRequest)
-	rg.POST("/services/:id/gitops/argocd/pull-requests", services.CreateServiceArgoCDGitOpsPullRequest)
-	rg.POST("/services/:id/gitops/flux/pull-requests", services.CreateServiceFluxGitOpsPullRequest)
+	rg.POST("/services/:id/gitops/pull-requests", platformauth.RequireRoles("admin", "developer"), services.CreateServiceGitOpsPullRequest)
+	rg.POST("/services/:id/gitops/argocd/pull-requests", platformauth.RequireRoles("admin", "developer"), services.CreateServiceArgoCDGitOpsPullRequest)
+	rg.POST("/services/:id/gitops/flux/pull-requests", platformauth.RequireRoles("admin", "developer"), services.CreateServiceFluxGitOpsPullRequest)
 }
 
 func registerDeployRoutes(rg *gin.RouterGroup) {
@@ -210,12 +212,12 @@ func registerDeployRoutes(rg *gin.RouterGroup) {
 
 func registerRuleRoutes(rg *gin.RouterGroup) {
 	rg.GET("/rules", rules.GetRules)
-	rg.POST("/rules", rules.CreateRule)
+	rg.POST("/rules", platformauth.RequireRoles("admin", "developer"), rules.CreateRule)
 	rg.GET("/rules/:id", rules.GetRule)
 	rg.GET("/rules/:id/publish-policy-check", rules.GetRulePublishPolicyCheck)
-	rg.PUT("/rules/:id", rules.UpdateRule)
-	rg.DELETE("/rules/:id", rules.DeleteRule)
-	rg.POST("/rules/:id/publish", rules.PublishRule)
+	rg.PUT("/rules/:id", platformauth.RequireRoles("admin", "developer"), rules.UpdateRule)
+	rg.DELETE("/rules/:id", platformauth.RequireRoles("admin", "developer"), rules.DeleteRule)
+	rg.POST("/rules/:id/publish", platformauth.RequireRoles("admin", "developer"), rules.PublishRule)
 	rg.POST("/rules/:id/logs", rules.AppendRuleLogs)
 }
 
@@ -231,18 +233,18 @@ func registerObservabilityRoutes(rg *gin.RouterGroup) {
 }
 
 func registerCredentialsRoutes(rg *gin.RouterGroup) {
-	rg.GET("/credentials/scm", credentials.GetScmCredentials)
-	rg.POST("/credentials/scm", credentials.CreateScmCredential)
-	rg.PUT("/credentials/scm/:id", credentials.UpdateScmCredential)
-	rg.DELETE("/credentials/scm/:id", credentials.DeleteScmCredential)
-	rg.GET("/credentials/registry", credentials.GetRegistryCredentials)
-	rg.POST("/credentials/registry", credentials.CreateRegistryCredential)
-	rg.PUT("/credentials/registry/:id", credentials.UpdateRegistryCredential)
-	rg.DELETE("/credentials/registry/:id", credentials.DeleteRegistryCredential)
+	rg.GET("/credentials/scm", platformauth.RequireRoles("admin"), credentials.GetScmCredentials)
+	rg.POST("/credentials/scm", platformauth.RequireRoles("admin"), credentials.CreateScmCredential)
+	rg.PUT("/credentials/scm/:id", platformauth.RequireRoles("admin"), credentials.UpdateScmCredential)
+	rg.DELETE("/credentials/scm/:id", platformauth.RequireRoles("admin"), credentials.DeleteScmCredential)
+	rg.GET("/credentials/registry", platformauth.RequireRoles("admin"), credentials.GetRegistryCredentials)
+	rg.POST("/credentials/registry", platformauth.RequireRoles("admin"), credentials.CreateRegistryCredential)
+	rg.PUT("/credentials/registry/:id", platformauth.RequireRoles("admin"), credentials.UpdateRegistryCredential)
+	rg.DELETE("/credentials/registry/:id", platformauth.RequireRoles("admin"), credentials.DeleteRegistryCredential)
 }
 
 func registerScmRoutes(rg *gin.RouterGroup) {
-	rg.POST("/scm/github/template-repos", scm.CreateTemplateRepo)
+	rg.POST("/scm/github/template-repos", platformauth.RequireRoles("admin", "developer"), scm.CreateTemplateRepo)
 	rg.GET("/scm/github/template-repos/availability", scm.CheckTemplateRepoAvailability)
 	rg.GET("/scm/commits", scm.ListCommits)
 }
@@ -250,31 +252,31 @@ func registerScmRoutes(rg *gin.RouterGroup) {
 func registerEnvironmentRoutes(rg *gin.RouterGroup) {
 	rg.GET("/regions", environments.GetRegions)
 	rg.GET("/environments", environments.GetEnvironments)
-	rg.POST("/environments", environments.CreateEnvironment)
-	rg.PUT("/environments/:id", environments.UpdateEnvironment)
-	rg.DELETE("/environments/:id", environments.DeleteEnvironment)
+	rg.POST("/environments", platformauth.RequireRoles("admin"), environments.CreateEnvironment)
+	rg.PUT("/environments/:id", platformauth.RequireRoles("admin"), environments.UpdateEnvironment)
+	rg.DELETE("/environments/:id", platformauth.RequireRoles("admin"), environments.DeleteEnvironment)
 	rg.GET("/environments/:id/lock", environments.CheckEnvironmentLock)
 	rg.GET("/deploy-templates", environments.GetDeployTemplates)
 	rg.GET("/deploy-templates/:id", environments.GetDeployTemplate)
-	rg.POST("/deploy-templates", environments.CreateDeployTemplate)
-	rg.PUT("/deploy-templates/:id", environments.UpdateDeployTemplate)
-	rg.DELETE("/deploy-templates/:id", environments.DeleteDeployTemplate)
+	rg.POST("/deploy-templates", platformauth.RequireRoles("admin"), environments.CreateDeployTemplate)
+	rg.PUT("/deploy-templates/:id", platformauth.RequireRoles("admin"), environments.UpdateDeployTemplate)
+	rg.DELETE("/deploy-templates/:id", platformauth.RequireRoles("admin"), environments.DeleteDeployTemplate)
 }
 
 func registerExternalEndpointRoutes(rg *gin.RouterGroup) {
 	rg.GET("/external-endpoints", externalendpoints.GetExternalEndpoints)
-	rg.POST("/external-endpoints", externalendpoints.CreateExternalEndpoint)
-	rg.PUT("/external-endpoints/:id", externalendpoints.UpdateExternalEndpoint)
-	rg.DELETE("/external-endpoints/:id", externalendpoints.DeleteExternalEndpoint)
+	rg.POST("/external-endpoints", platformauth.RequireRoles("admin"), externalendpoints.CreateExternalEndpoint)
+	rg.PUT("/external-endpoints/:id", platformauth.RequireRoles("admin"), externalendpoints.UpdateExternalEndpoint)
+	rg.DELETE("/external-endpoints/:id", platformauth.RequireRoles("admin"), externalendpoints.DeleteExternalEndpoint)
 }
 
 func registerTemplateRoutes(rg *gin.RouterGroup) {
 	rg.GET("/templates", templates.ListTemplates)
 	rg.GET("/templates/:id", templates.GetTemplate)
-	rg.POST("/templates/verify", templates.VerifyTemplates)
-	rg.POST("/templates", templates.CreateTemplate)
-	rg.PUT("/templates/:id", templates.UpdateTemplate)
-	rg.DELETE("/templates/:id", templates.DeleteTemplate)
+	rg.POST("/templates/verify", platformauth.RequireRoles("admin"), templates.VerifyTemplates)
+	rg.POST("/templates", platformauth.RequireRoles("admin"), templates.CreateTemplate)
+	rg.PUT("/templates/:id", platformauth.RequireRoles("admin"), templates.UpdateTemplate)
+	rg.DELETE("/templates/:id", platformauth.RequireRoles("admin"), templates.DeleteTemplate)
 }
 
 func registerProfileRoutes(rg *gin.RouterGroup) {
@@ -291,47 +293,48 @@ func registerSettingsRoutes(rg *gin.RouterGroup) {
 	rg.GET("/settings/providers/catalog", settings.GetProviderCatalog)
 	rg.GET("/settings/providers/status", settings.GetProviderStatus)
 	rg.GET("/settings/providers/health", settings.GetProviderHealth)
-	rg.GET("/settings/platform", settings.GetPlatformSettings)
-	rg.PUT("/settings/platform", settings.UpdatePlatformSettings)
+	rg.GET("/settings/platform", platformauth.RequireRoles("admin"), settings.GetPlatformSettings)
+	rg.PUT("/settings/platform", platformauth.RequireRoles("admin"), settings.UpdatePlatformSettings)
 	rg.GET("/runtime-profiles", settings.GetRuntimeProfiles)
-	rg.POST("/runtime-profiles", settings.CreateRuntimeProfile)
-	rg.PUT("/runtime-profiles/:id", settings.UpdateRuntimeProfile)
-	rg.DELETE("/runtime-profiles/:id", settings.DeleteRuntimeProfile)
+	rg.POST("/runtime-profiles", platformauth.RequireRoles("admin"), settings.CreateRuntimeProfile)
+	rg.PUT("/runtime-profiles/:id", platformauth.RequireRoles("admin"), settings.UpdateRuntimeProfile)
+	rg.DELETE("/runtime-profiles/:id", platformauth.RequireRoles("admin"), settings.DeleteRuntimeProfile)
 }
 
 func registerGovernanceRoutes(rg *gin.RouterGroup) {
 	rg.GET("/governance/settings", governance.GetGovernanceSettings)
-	rg.PUT("/governance/settings", governance.UpdateGovernanceSettings)
+	rg.PUT("/governance/settings", platformauth.RequireRoles("admin"), governance.UpdateGovernanceSettings)
 	rg.GET("/governance/approvals", governance.GetGovernanceApprovals)
 	rg.POST("/governance/approvals", governance.CreateGovernanceApproval)
-	rg.POST("/governance/approvals/:id/review", governance.ReviewGovernanceApproval)
-	rg.DELETE("/governance/approvals/:id", governance.DeleteGovernanceApproval)
+	rg.POST("/governance/approvals/:id/review", platformauth.RequireRoles("admin"), governance.ReviewGovernanceApproval)
+	rg.DELETE("/governance/approvals/:id", platformauth.RequireRoles("admin"), governance.DeleteGovernanceApproval)
 	rg.GET("/governance/exceptions", governance.GetGovernanceExceptions)
-	rg.POST("/governance/exceptions", governance.CreateGovernanceException)
-	rg.DELETE("/governance/exceptions/:id", governance.RevokeGovernanceException)
-	rg.GET("/governance/audit", governance.GetGovernanceAudit)
+	rg.POST("/governance/exceptions", platformauth.RequireRoles("admin"), governance.CreateGovernanceException)
+	rg.DELETE("/governance/exceptions/:id", platformauth.RequireRoles("admin"), governance.RevokeGovernanceException)
+	rg.GET("/governance/audit", platformauth.RequireRoles("admin"), governance.GetGovernanceAudit)
 }
 
 func registerIdentityRoutes(rg *gin.RouterGroup) {
-	rg.GET("/identity/config", identity.GetIdpConfig)
-	rg.PUT("/identity/config", identity.UpdateIdpConfig)
-	rg.GET("/identity/connections", identity.GetIdpConnections)
-	rg.POST("/identity/connections", identity.CreateIdpConnection)
-	rg.DELETE("/identity/connections/:id", identity.DeleteIdpConnection)
-	rg.GET("/identity/mappings", identity.GetGroupMappings)
-	rg.POST("/identity/mappings", identity.CreateGroupMapping)
-	rg.PUT("/identity/mappings/:id", identity.UpdateGroupMapping)
-	rg.DELETE("/identity/mappings/:id", identity.DeleteGroupMapping)
-	rg.POST("/identity/mappings/sync", identity.SyncGroupMappings)
-	rg.GET("/identity/sessions", identity.GetIdpSessions)
-	rg.DELETE("/identity/sessions/:id", identity.RevokeIdpSession)
-	rg.DELETE("/identity/sessions", identity.RevokeAllIdpSessions)
-	rg.GET("/identity/audit", identity.GetIdpAudit)
-	rg.POST("/identity/test/:protocol", identity.TestIdpConnection)
+	admin := platformauth.RequireRoles("admin")
+	rg.GET("/identity/config", admin, identity.GetIdpConfig)
+	rg.PUT("/identity/config", admin, identity.UpdateIdpConfig)
+	rg.GET("/identity/connections", admin, identity.GetIdpConnections)
+	rg.POST("/identity/connections", admin, identity.CreateIdpConnection)
+	rg.DELETE("/identity/connections/:id", admin, identity.DeleteIdpConnection)
+	rg.GET("/identity/mappings", admin, identity.GetGroupMappings)
+	rg.POST("/identity/mappings", admin, identity.CreateGroupMapping)
+	rg.PUT("/identity/mappings/:id", admin, identity.UpdateGroupMapping)
+	rg.DELETE("/identity/mappings/:id", admin, identity.DeleteGroupMapping)
+	rg.POST("/identity/mappings/sync", admin, identity.SyncGroupMappings)
+	rg.GET("/identity/sessions", admin, identity.GetIdpSessions)
+	rg.DELETE("/identity/sessions/:id", admin, identity.RevokeIdpSession)
+	rg.DELETE("/identity/sessions", admin, identity.RevokeAllIdpSessions)
+	rg.GET("/identity/audit", admin, identity.GetIdpAudit)
+	rg.POST("/identity/test/:protocol", admin, identity.TestIdpConnection)
 }
 
 func registerAuditRoutes(rg *gin.RouterGroup) {
-	rg.GET("/audit", audit.GetAuditEvents)
+	rg.GET("/audit", platformauth.RequireRoles("admin"), audit.GetAuditEvents)
 }
 
 func registerOperationsRoutes(rg *gin.RouterGroup) {

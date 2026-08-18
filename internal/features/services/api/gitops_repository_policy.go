@@ -45,6 +45,8 @@ func (e serviceGitOpsRepositoryPolicyError) Error() string {
 
 var loadServiceProjectForGitOpsRepositoryPolicy = loadServiceProject
 var resolveServiceScmCredentialForGitOpsRepositoryPolicy = resolveServiceScmCredential
+var ensureGitOpsRepositoryPolicyReadyForPullRequest = ensureGitOpsRepositoryPolicyReady
+var recordServiceGitOpsAudit = shared.RecordAuditEvent
 var checkGitOpsRepositoryBaseBranch = func(
 	ctx context.Context,
 	provider string,

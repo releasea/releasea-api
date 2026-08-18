@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	scmmodels "releaseaapi/internal/features/scm/models"
 	httpclient "releaseaapi/internal/platform/http/client"
 	gh "releaseaapi/internal/platform/integrations/github"
 	platformmodels "releaseaapi/internal/platform/models"
+	scmmodels "releaseaapi/internal/platform/models"
 
 	yaml "gopkg.in/yaml.v3"
 )

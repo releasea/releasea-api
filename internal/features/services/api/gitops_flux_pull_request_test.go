@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	scmmodels "releaseaapi/internal/features/scm/models"
+	scmmodels "releaseaapi/internal/platform/models"
 
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/bson"
@@ -16,6 +16,7 @@ import (
 
 func TestCreateServiceFluxGitOpsPullRequestReturnsPullRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	stubGitOpsRepositoryPolicyReady(t)
 
 	previousFindService := findServiceForDesiredState
 	previousFindRules := findRulesForDesiredState

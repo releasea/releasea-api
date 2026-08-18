@@ -12,7 +12,7 @@ import (
 )
 
 func GetTeams(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	teams, err := shared.FindAll(ctx, shared.Collection(shared.TeamsCollection), bson.M{})
@@ -38,7 +38,7 @@ func CreateTeam(c *gin.Context) {
 		payload["members"] = []interface{}{}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	if err := shared.InsertOne(ctx, shared.Collection(shared.TeamsCollection), payload); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to create team")
@@ -61,7 +61,7 @@ func UpdateTeam(c *gin.Context) {
 
 	payload["updatedAt"] = shared.NowISO()
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	if err := shared.UpdateByID(ctx, shared.Collection(shared.TeamsCollection), teamID, payload); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to update team")
@@ -81,7 +81,7 @@ func DeleteTeam(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Team ID required")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	if err := shared.DeleteByID(ctx, shared.Collection(shared.TeamsCollection), teamID); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to delete team")

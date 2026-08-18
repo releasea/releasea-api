@@ -13,7 +13,7 @@ import (
 )
 
 func GetIdpConfig(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	config, err := shared.FindOne(ctx, shared.Collection(shared.IdpConfigCollection), bson.M{})
 	if err != nil {
@@ -35,7 +35,7 @@ func UpdateIdpConfig(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	config, err := shared.FindOne(ctx, shared.Collection(shared.IdpConfigCollection), bson.M{})
 	if err != nil {
@@ -86,7 +86,7 @@ func UpdateIdpConfig(c *gin.Context) {
 }
 
 func GetIdpConnections(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	items, err := shared.FindAll(ctx, shared.Collection(shared.IdpConnectionsCollection), bson.M{})
 	if err != nil {
@@ -106,7 +106,7 @@ func CreateIdpConnection(c *gin.Context) {
 	payload["_id"] = id
 	payload["id"] = id
 	payload["createdAt"] = shared.NowISO()
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	if err := shared.InsertOne(ctx, shared.Collection(shared.IdpConnectionsCollection), payload); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to create connection")
@@ -117,7 +117,7 @@ func CreateIdpConnection(c *gin.Context) {
 
 func DeleteIdpConnection(c *gin.Context) {
 	id := c.Param("id")
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	if err := shared.DeleteByID(ctx, shared.Collection(shared.IdpConnectionsCollection), id); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to delete connection")
@@ -127,7 +127,7 @@ func DeleteIdpConnection(c *gin.Context) {
 }
 
 func GetGroupMappings(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	items, err := shared.FindAll(ctx, shared.Collection(shared.IdpMappingsCollection), bson.M{})
 	if err != nil {
@@ -146,7 +146,7 @@ func CreateGroupMapping(c *gin.Context) {
 	id := "mapping-" + uuid.NewString()
 	payload["_id"] = id
 	payload["id"] = id
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	if err := shared.InsertOne(ctx, shared.Collection(shared.IdpMappingsCollection), payload); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to create mapping")
@@ -162,7 +162,7 @@ func UpdateGroupMapping(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	if err := shared.UpdateByID(ctx, shared.Collection(shared.IdpMappingsCollection), mappingID, payload); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to update mapping")
@@ -174,7 +174,7 @@ func UpdateGroupMapping(c *gin.Context) {
 
 func DeleteGroupMapping(c *gin.Context) {
 	mappingID := c.Param("id")
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	if err := shared.DeleteByID(ctx, shared.Collection(shared.IdpMappingsCollection), mappingID); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to delete mapping")
@@ -188,7 +188,7 @@ func SyncGroupMappings(c *gin.Context) {
 }
 
 func GetIdpSessions(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	items, err := shared.FindAll(ctx, shared.Collection(shared.IdpSessionsCollection), bson.M{})
 	if err != nil {
@@ -200,21 +200,21 @@ func GetIdpSessions(c *gin.Context) {
 
 func RevokeIdpSession(c *gin.Context) {
 	id := c.Param("id")
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	_ = shared.DeleteByID(ctx, shared.Collection(shared.IdpSessionsCollection), id)
 	c.Status(http.StatusNoContent)
 }
 
 func RevokeAllIdpSessions(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	_, _ = shared.Collection(shared.IdpSessionsCollection).DeleteMany(ctx, bson.M{})
 	c.Status(http.StatusNoContent)
 }
 
 func GetIdpAudit(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	items, err := shared.FindAll(ctx, shared.Collection(shared.IdpAuditCollection), bson.M{})
 	if err != nil {

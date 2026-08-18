@@ -27,7 +27,7 @@ func Login(c *gin.Context) {
 	}
 	body.Email = strings.ToLower(strings.TrimSpace(body.Email))
 	body.Password = strings.TrimSpace(body.Password)
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	user, err := shared.FindOne(ctx, shared.Collection(shared.UsersCollection), bson.M{"email": body.Email})
@@ -83,7 +83,7 @@ func Signup(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Missing required fields")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	_, err := shared.FindOne(ctx, shared.Collection(shared.UsersCollection), bson.M{"email": body.Email})
@@ -157,7 +157,7 @@ func Signup(c *gin.Context) {
 func Logout(c *gin.Context) {
 	refreshToken := platformauth.ReadRefreshCookieToken(c)
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	if refreshToken != "" {
@@ -199,7 +199,7 @@ func Refresh(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	token, nextRefresh, user, err := platformauth.RefreshSessionTokens(ctx, refreshToken, platformauth.SessionMeta{
@@ -250,7 +250,7 @@ func RequestPasswordReset(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	_, err := shared.FindOne(ctx, shared.Collection(shared.UsersCollection), bson.M{"email": body.Email})
@@ -298,7 +298,7 @@ func ValidatePasswordReset(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Token required")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	reset, err := shared.FindOne(ctx, shared.Collection(shared.PasswordResetsCollection), passwordResetFilter(token, time.Now().UTC()))
@@ -320,7 +320,7 @@ func ConfirmPasswordReset(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	var reset bson.M

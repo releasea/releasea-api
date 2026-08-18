@@ -25,7 +25,7 @@ import (
 
 func GetScmCredentials(c *gin.Context) {
 	filter := buildCredentialFilter(c)
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	items, err := shared.FindAll(ctx, shared.Collection(shared.ScmCredentialsCollection), filter)
 	if err != nil {
@@ -91,7 +91,7 @@ func CreateScmCredential(c *gin.Context) {
 		"updatedAt":  now,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	if err := shared.InsertOne(ctx, shared.Collection(shared.ScmCredentialsCollection), doc); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to create SCM credential")
@@ -112,7 +112,7 @@ func UpdateScmCredential(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	existing, err := shared.FindOne(ctx, shared.Collection(shared.ScmCredentialsCollection), bson.M{"id": credID})
 	if err != nil {
@@ -188,7 +188,7 @@ func DeleteScmCredential(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Credential ID required")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	deleted, err := deleteCredentialByIDOrLegacyObjectID(ctx, shared.Collection(shared.ScmCredentialsCollection), credID)
 	if err != nil {
@@ -204,7 +204,7 @@ func DeleteScmCredential(c *gin.Context) {
 
 func GetRegistryCredentials(c *gin.Context) {
 	filter := buildCredentialFilter(c)
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	items, err := shared.FindAll(ctx, shared.Collection(shared.RegistryCredentialsCollection), filter)
 	if err != nil {
@@ -260,7 +260,7 @@ func CreateRegistryCredential(c *gin.Context) {
 		"updatedAt":   now,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	if err := shared.InsertOne(ctx, shared.Collection(shared.RegistryCredentialsCollection), doc); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to create registry credential")
@@ -281,7 +281,7 @@ func UpdateRegistryCredential(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	existing, err := shared.FindOne(ctx, shared.Collection(shared.RegistryCredentialsCollection), bson.M{"id": credID})
 	if err != nil {
@@ -348,7 +348,7 @@ func DeleteRegistryCredential(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Credential ID required")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	deleted, err := deleteCredentialByIDOrLegacyObjectID(ctx, shared.Collection(shared.RegistryCredentialsCollection), credID)
 	if err != nil {
@@ -374,7 +374,7 @@ func WorkerCredentials(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	service, err := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": payload.ServiceID})

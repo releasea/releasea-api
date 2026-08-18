@@ -1,7 +1,9 @@
 package shared
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -47,6 +49,31 @@ func TestHealthReturnsOK(t *testing.T) {
 	}
 	if body["status"] != "ok" {
 		t.Fatalf("status = %q, want %q", body["status"], "ok")
+	}
+}
+
+func TestReadinessReflectsDatabaseState(t *testing.T) {
+	previous := pingDatabase
+	t.Cleanup(func() { pingDatabase = previous })
+
+	for _, test := range []struct {
+		name       string
+		pingError  error
+		wantStatus int
+	}{
+		{name: "ready", wantStatus: http.StatusOK},
+		{name: "database unavailable", pingError: errors.New("offline"), wantStatus: http.StatusServiceUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pingDatabase = func(context.Context) error { return test.pingError }
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(http.MethodGet, "/health/ready", nil)
+			Readiness(ctx)
+			if recorder.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d", recorder.Code, test.wantStatus)
+			}
+		})
 	}
 }
 

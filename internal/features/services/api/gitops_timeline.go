@@ -55,4 +55,3 @@ func GetServiceGitOpsTimeline(c *gin.Context) {
 	})
 	c.JSON(http.StatusOK, items)
 }
-

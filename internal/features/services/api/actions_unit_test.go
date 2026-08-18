@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 func TestResolveServiceDeployStrategyType(t *testing.T) {
@@ -372,6 +373,7 @@ func TestResolveServiceDeployReplicaTarget(t *testing.T) {
 
 func TestMaybeRespondDeployPolicyBlockedReturnsConflictJSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	stubLatestDeployPolicyCredential(t)
 	previous := loadGovernanceSettings
 	previousAudit := recordGovernancePolicyBlockAudit
 	loadGovernanceSettings = func(context.Context) (bson.M, error) {
@@ -433,6 +435,7 @@ func TestMaybeRespondDeployPolicyBlockedReturnsConflictJSON(t *testing.T) {
 
 func TestMaybeRespondDeployPolicyBlockedAllowsCompliantRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	stubLatestDeployPolicyCredential(t)
 	previous := loadGovernanceSettings
 	previousAudit := recordGovernancePolicyBlockAudit
 	loadGovernanceSettings = func(context.Context) (bson.M, error) {
@@ -473,6 +476,7 @@ func TestMaybeRespondDeployPolicyBlockedAllowsCompliantRequest(t *testing.T) {
 
 func TestMaybeRespondDeployPolicyBlockedAllowsTemporaryException(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	stubLatestDeployPolicyCredential(t)
 	previousSettings := loadGovernanceSettings
 	previousExceptions := findDeployPolicyExceptions
 	previousBlockAudit := recordGovernancePolicyBlockAudit
@@ -526,4 +530,15 @@ func TestMaybeRespondDeployPolicyBlockedAllowsTemporaryException(t *testing.T) {
 	if recorder.Body.Len() != 0 {
 		t.Fatalf("expected no response body for excepted request, got %q", recorder.Body.String())
 	}
+}
+
+func stubLatestDeployPolicyCredential(t *testing.T) {
+	t.Helper()
+	previous := findLatestDeployPolicyCredential
+	findLatestDeployPolicyCredential = func(context.Context, string) (bson.M, error) {
+		return nil, mongo.ErrNoDocuments
+	}
+	t.Cleanup(func() {
+		findLatestDeployPolicyCredential = previous
+	})
 }

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	operations "releaseaapi/internal/features/operations/api"
 	platformmodels "releaseaapi/internal/platform/models"
 	"releaseaapi/internal/platform/shared"
 
@@ -25,6 +24,7 @@ const (
 	controlPlaneQueueStatusDegraded     = "degraded"
 	controlPlaneDispatchStatusSending   = "dispatching"
 	controlPlaneDispatchStatusFailed    = "dispatch-failed"
+	controlPlaneOperationStatusQueued   = "queued"
 	defaultWorkerDeadLetterQueueNameSfx = ".dead-letter"
 )
 
@@ -59,7 +59,7 @@ func loadControlPlaneMetrics(ctx context.Context) (platformmodels.ControlPlaneMe
 	recentFailureThreshold := now.Add(-controlPlaneRecentFailureWindow).Format(time.RFC3339)
 
 	var err error
-	if queueMetrics.QueuedOperations, err = operationsCol.CountDocuments(ctx, bson.M{"status": operations.StatusQueued}); err != nil {
+	if queueMetrics.QueuedOperations, err = operationsCol.CountDocuments(ctx, bson.M{"status": controlPlaneOperationStatusQueued}); err != nil {
 		return platformmodels.ControlPlaneMetrics{}, err
 	}
 	if queueMetrics.DispatchingOperations, err = operationsCol.CountDocuments(ctx, bson.M{"dispatch.status": controlPlaneDispatchStatusSending}); err != nil {
@@ -69,7 +69,7 @@ func loadControlPlaneMetrics(ctx context.Context) (platformmodels.ControlPlaneMe
 		return platformmodels.ControlPlaneMetrics{}, err
 	}
 	if queueMetrics.StaleQueuedOperations, err = operationsCol.CountDocuments(ctx, bson.M{
-		"status":    operations.StatusQueued,
+		"status":    controlPlaneOperationStatusQueued,
 		"createdAt": bson.M{"$lte": staleThreshold},
 	}); err != nil {
 		return platformmodels.ControlPlaneMetrics{}, err
@@ -83,7 +83,7 @@ func loadControlPlaneMetrics(ctx context.Context) (platformmodels.ControlPlaneMe
 	var oldestQueued bson.M
 	oldestQueuedErr := operationsCol.FindOne(
 		ctx,
-		bson.M{"status": operations.StatusQueued},
+		bson.M{"status": controlPlaneOperationStatusQueued},
 		options.FindOne().SetSort(bson.M{"createdAt": 1}),
 	).Decode(&oldestQueued)
 	if oldestQueuedErr == nil {

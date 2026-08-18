@@ -66,7 +66,11 @@ func resolveServiceScmRuntimeToken(ctx context.Context, service bson.M, project 
 	if err != nil {
 		return nil, "", fmt.Errorf("SCM credential provider %q cannot delete managed repository %s: %w", strings.TrimSpace(provider), repoKey, err)
 	}
-	return runtime, strings.TrimSpace(shared.StringValue(cred["token"])), nil
+	token, err := shared.DecryptSensitiveValue(strings.TrimSpace(shared.StringValue(cred["token"])))
+	if err != nil {
+		return nil, "", fmt.Errorf("decrypt SCM credential for repository %s: %w", repoKey, err)
+	}
+	return runtime, token, nil
 }
 
 func resolveServiceScmCredential(ctx context.Context, service bson.M, project bson.M) (bson.M, error) {

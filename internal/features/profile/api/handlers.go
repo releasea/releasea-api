@@ -15,8 +15,8 @@ import (
 func GetProfile(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
-	profile, err := shared.FindOne(ctx, shared.Collection(shared.ProfileCollection), bson.M{})
-	if err != nil {
+	profile, profileID := loadProfile(ctx, c)
+	if profileID == "" {
 		shared.RespondError(c, http.StatusNotFound, "Profile not found")
 		return
 	}
@@ -32,19 +32,33 @@ func UpdateProfile(c *gin.Context) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
-	profile, err := shared.FindOne(ctx, shared.Collection(shared.ProfileCollection), bson.M{})
-	if err != nil {
-		shared.RespondError(c, http.StatusNotFound, "Profile not found")
-		return
-	}
-	id, _ := profile["_id"].(string)
+	profile, id := loadProfile(ctx, c)
 	if id == "" {
 		shared.RespondError(c, http.StatusNotFound, "Profile not found")
 		return
 	}
-	if err := shared.UpdateByID(ctx, shared.Collection(shared.ProfileCollection), id, payload); err != nil {
+	updates := allowedProfileUpdates(payload)
+	if len(updates) == 0 {
+		shared.RespondError(c, http.StatusBadRequest, "No supported profile fields provided")
+		return
+	}
+	updates["updatedAt"] = shared.NowISO()
+	if err := shared.UpdateByID(ctx, shared.Collection(shared.ProfileCollection), id, updates); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to update profile")
 		return
+	}
+	userUpdates := bson.M{}
+	for _, field := range []string{"name", "email", "avatar"} {
+		if value, ok := updates[field]; ok {
+			userUpdates[field] = value
+		}
+	}
+	if len(userUpdates) > 0 {
+		userID := shared.StringValue(profile["id"])
+		if userID == "" {
+			userID = id
+		}
+		_ = shared.UpdateByID(ctx, shared.Collection(shared.UsersCollection), userID, userUpdates)
 	}
 	updated, _ := shared.FindOne(ctx, shared.Collection(shared.ProfileCollection), bson.M{"_id": id})
 	c.JSON(http.StatusOK, updated)
@@ -69,10 +83,11 @@ func ChangePassword(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
 	userID := authUserID(c)
-	userFilter := bson.M{}
-	if userID != "" {
-		userFilter["id"] = userID
+	if userID == "" {
+		shared.RespondError(c, http.StatusUnauthorized, "Authentication required")
+		return
 	}
+	userFilter := bson.M{"$or": bson.A{bson.M{"id": userID}, bson.M{"_id": userID}}}
 	user, err := shared.FindOne(ctx, shared.Collection(shared.UsersCollection), userFilter)
 	if err != nil {
 		shared.RespondError(c, http.StatusNotFound, "User not found")
@@ -265,10 +280,10 @@ func authUserID(c *gin.Context) string {
 
 func loadProfile(ctx context.Context, c *gin.Context) (bson.M, string) {
 	userID := authUserID(c)
-	filter := bson.M{}
-	if userID != "" {
-		filter["id"] = userID
+	if userID == "" {
+		return nil, ""
 	}
+	filter := bson.M{"$or": bson.A{bson.M{"id": userID}, bson.M{"_id": userID}}}
 	profile, err := shared.FindOne(ctx, shared.Collection(shared.ProfileCollection), filter)
 	if err != nil {
 		return nil, ""
@@ -278,6 +293,27 @@ func loadProfile(ctx context.Context, c *gin.Context) (bson.M, string) {
 		id = shared.StringValue(profile["id"])
 	}
 	return profile, id
+}
+
+func allowedProfileUpdates(payload bson.M) bson.M {
+	updates := bson.M{}
+	if value, ok := payload["name"].(string); ok {
+		if normalized := strings.TrimSpace(value); normalized != "" {
+			updates["name"] = normalized
+		}
+	}
+	if value, ok := payload["email"].(string); ok {
+		if normalized := strings.ToLower(strings.TrimSpace(value)); normalized != "" {
+			updates["email"] = normalized
+		}
+	}
+	if value, ok := payload["avatar"].(string); ok {
+		updates["avatar"] = strings.TrimSpace(value)
+	}
+	if value, ok := payload["twoFactorEnabled"].(bool); ok {
+		updates["twoFactorEnabled"] = value
+	}
+	return updates
 }
 
 func sessionStringID(value interface{}) string {

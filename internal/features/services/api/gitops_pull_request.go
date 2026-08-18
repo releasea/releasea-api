@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	scmmodels "releaseaapi/internal/features/scm/models"
+	scmmodels "releaseaapi/internal/platform/models"
 	scmproviders "releaseaapi/internal/platform/providers/scm"
 	"releaseaapi/internal/platform/shared"
 
@@ -36,6 +36,19 @@ var openServiceDesiredStatePullRequest = func(
 	rules []bson.M,
 	payload gitOpsPullRequestPayload,
 ) (*scmmodels.DesiredStatePullRequestResponse, error) {
+	repoURL := strings.TrimSpace(shared.StringValue(service["repoUrl"]))
+	if repoURL == "" {
+		return nil, errors.New("service repository URL is required for GitOps pull requests")
+	}
+
+	exportData, err := buildServiceDesiredStateExport(service, rules)
+	if err != nil {
+		return nil, fmt.Errorf("failed to render desired state: %w", err)
+	}
+	if exportData.Validation.Status == "invalid" {
+		return nil, serviceDesiredStateValidationError{Validation: exportData.Validation}
+	}
+
 	project, err := loadServiceProject(ctx, service)
 	if err != nil {
 		return nil, err
@@ -58,19 +71,6 @@ var openServiceDesiredStatePullRequest = func(
 	runtime, err := scmproviders.ResolveRuntimeForCapability(provider, scmproviders.CapabilityPullRequests)
 	if err != nil {
 		return nil, err
-	}
-
-	repoURL := strings.TrimSpace(shared.StringValue(service["repoUrl"]))
-	if repoURL == "" {
-		return nil, errors.New("service repository URL is required for GitOps pull requests")
-	}
-
-	exportData, err := buildServiceDesiredStateExport(service, rules)
-	if err != nil {
-		return nil, fmt.Errorf("failed to render desired state: %w", err)
-	}
-	if exportData.Validation.Status == "invalid" {
-		return nil, serviceDesiredStateValidationError{Validation: exportData.Validation}
 	}
 
 	request := scmmodels.DesiredStatePullRequestRequest{
@@ -122,7 +122,7 @@ func CreateServiceGitOpsPullRequest(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Service repository URL is required for GitOps pull requests")
 		return
 	}
-	if err := ensureGitOpsRepositoryPolicyReady(ctx, service); err != nil {
+	if err := ensureGitOpsRepositoryPolicyReadyForPullRequest(ctx, service); err != nil {
 		var repositoryPolicyErr serviceGitOpsRepositoryPolicyError
 		if errors.As(err, &repositoryPolicyErr) {
 			c.JSON(http.StatusConflict, gin.H{
@@ -158,7 +158,7 @@ func CreateServiceGitOpsPullRequest(c *gin.Context) {
 	}
 
 	actorID, actorName, actorRole := shared.AuditActorFromContext(c)
-	shared.RecordAuditEvent(ctx, shared.AuditEvent{
+	recordServiceGitOpsAudit(ctx, shared.AuditEvent{
 		Action:       "service.gitops_pr.create",
 		ResourceType: "service",
 		ResourceID:   serviceID,

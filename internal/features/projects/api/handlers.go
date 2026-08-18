@@ -13,7 +13,7 @@ import (
 )
 
 func GetProjects(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	projects, err := shared.FindAll(ctx, shared.Collection(shared.ProjectsCollection), bson.M{})
@@ -40,7 +40,7 @@ func CreateProject(c *gin.Context) {
 		payload["services"] = []interface{}{}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	if err := shared.InsertOne(ctx, shared.Collection(shared.ProjectsCollection), payload); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to create project")
@@ -61,7 +61,7 @@ func UpdateProject(c *gin.Context) {
 		return
 	}
 	payload["updatedAt"] = shared.NowISO()
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	if err := shared.UpdateByID(ctx, shared.Collection(shared.ProjectsCollection), projectID, payload); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to update project")
@@ -82,7 +82,7 @@ func DeleteProject(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	project, err := shared.FindOne(ctx, shared.Collection(shared.ProjectsCollection), bson.M{"id": projectID})

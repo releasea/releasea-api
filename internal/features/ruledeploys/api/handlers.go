@@ -12,7 +12,7 @@ import (
 )
 
 func GetRuleDeploys(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	items, err := shared.FindAll(ctx, shared.Collection(shared.RuleDeploysCollection), bson.M{})
 	if err != nil {
@@ -47,7 +47,7 @@ func AppendRuleDeployLogs(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "No log lines provided")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	update := bson.M{
 		"$push": bson.M{"logs": bson.M{"$each": lines}},

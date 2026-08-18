@@ -30,7 +30,7 @@ const (
 var providerHealthLoader = loadProviderHealthCatalog
 
 func GetProviderHealth(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 25*time.Second)
 	defer cancel()
 
 	health, err := providerHealthLoader(ctx)

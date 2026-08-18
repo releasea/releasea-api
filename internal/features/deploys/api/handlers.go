@@ -13,7 +13,7 @@ import (
 )
 
 func GetDeploys(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	items, err := shared.FindAll(ctx, shared.Collection(shared.DeploysCollection), bson.M{})
 	if err != nil {
@@ -49,7 +49,7 @@ func AppendDeployLogs(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	now := shared.NowISO()

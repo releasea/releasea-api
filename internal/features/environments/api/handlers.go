@@ -45,7 +45,7 @@ func CreateEnvironment(c *gin.Context) {
 
 	namespace := shared.ResolveAppNamespace(id)
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	existing, _ := shared.FindOne(ctx, shared.Collection(shared.EnvironmentsCollection), bson.M{"id": id})
@@ -102,7 +102,7 @@ func UpdateEnvironment(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	existing, err := shared.FindOne(ctx, shared.Collection(shared.EnvironmentsCollection), bson.M{"id": envID})
@@ -153,7 +153,7 @@ func DeleteEnvironment(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	// Check if workers/deploys reference this environment
@@ -183,7 +183,7 @@ func CheckEnvironmentLock(c *gin.Context) {
 
 	namespace := shared.ResolveAppNamespace(envID)
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	deployCount, _ := shared.Collection(shared.DeploysCollection).CountDocuments(ctx, bson.M{

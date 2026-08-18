@@ -23,7 +23,7 @@ func CreateDeploy(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	service, ok := loadDeployServiceOrRespond(c, ctx, request.ServiceID)
@@ -135,7 +135,7 @@ func PromoteCanary(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	service, ok := loadDeployServiceOrRespond(c, ctx, request.ServiceID)

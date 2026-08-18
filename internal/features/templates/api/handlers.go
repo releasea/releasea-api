@@ -13,7 +13,7 @@ import (
 )
 
 func ListTemplates(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	items, err := shared.FindAll(ctx, shared.Collection(shared.ServiceTemplatesCollection), bson.M{})
 	if err != nil {
@@ -29,7 +29,7 @@ func GetTemplate(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Template ID required")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	item, err := shared.FindOne(ctx, shared.Collection(shared.ServiceTemplatesCollection), bson.M{"_id": templateID})
 	if err != nil {
@@ -58,7 +58,7 @@ func CreateTemplate(c *gin.Context) {
 	normalized["_id"] = id
 	normalized["id"] = id
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	if err := shared.InsertOne(ctx, shared.Collection(shared.ServiceTemplatesCollection), normalized); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to create template")
@@ -79,7 +79,7 @@ func UpdateTemplate(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	existing, err := shared.FindOne(ctx, shared.Collection(shared.ServiceTemplatesCollection), bson.M{"_id": templateID})
 	if err != nil {
@@ -152,7 +152,7 @@ func DeleteTemplate(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Template ID required")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	if err := shared.DeleteByID(ctx, shared.Collection(shared.ServiceTemplatesCollection), templateID); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to delete template")

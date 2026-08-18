@@ -69,6 +69,15 @@ func EnsureIndexes(ctx context.Context) error {
 		{shared.PlatformAuditCollection, []mongo.IndexModel{
 			{Keys: bson.D{{Key: "resourceType", Value: 1}, {Key: "resourceId", Value: 1}, {Key: "createdAt", Value: -1}}, Options: options.Index().SetName("platform_audit_resource_created")},
 		}},
+		{shared.AIProvidersCollection, []mongo.IndexModel{
+			{Keys: bson.D{{Key: "id", Value: 1}}, Options: options.Index().SetUnique(true).SetName("ai_providers_id_unique")},
+			{Keys: bson.D{{Key: "default", Value: -1}, {Key: "updatedAt", Value: -1}}, Options: options.Index().SetName("ai_providers_default_updated")},
+		}},
+		{shared.AIAnalysesCollection, []mongo.IndexModel{
+			{Keys: bson.D{{Key: "serviceId", Value: 1}, {Key: "createdAt", Value: -1}}, Options: options.Index().SetName("ai_analyses_service_created")},
+			{Keys: bson.D{{Key: "providerId", Value: 1}, {Key: "createdAt", Value: -1}}, Options: options.Index().SetName("ai_analyses_provider_created")},
+			{Keys: bson.D{{Key: "expiresAt", Value: 1}}, Options: options.Index().SetExpireAfterSeconds(0).SetName("ai_analyses_expiry")},
+		}},
 	}
 
 	for _, definition := range definitions {

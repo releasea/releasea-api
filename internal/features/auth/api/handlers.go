@@ -2,6 +2,10 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -251,20 +255,41 @@ func RequestPasswordReset(c *gin.Context) {
 
 	_, err := shared.FindOne(ctx, shared.Collection(shared.UsersCollection), bson.M{"email": body.Email})
 	if err != nil {
-		shared.RespondError(c, http.StatusNotFound, "User not found")
+		// Keep the response indistinguishable to prevent account enumeration.
+		c.JSON(http.StatusAccepted, gin.H{"accepted": true})
 		return
 	}
 
-	token := uuid.NewString()
-	expiresAt := time.Now().UTC().Add(30 * time.Minute).Format(time.RFC3339)
+	token, err := newPasswordResetToken()
+	if err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to create password reset")
+		return
+	}
+	tokenHash := hashPasswordResetToken(token)
+	expiresAt := time.Now().UTC().Add(30 * time.Minute)
 	resetDoc := bson.M{
-		"_id":       token,
-		"token":     token,
+		"_id":       tokenHash,
+		"tokenHash": tokenHash,
 		"email":     body.Email,
 		"expiresAt": expiresAt,
+		"createdAt": time.Now().UTC(),
 	}
-	_ = shared.InsertOne(ctx, shared.Collection(shared.PasswordResetsCollection), resetDoc)
-	c.JSON(http.StatusOK, gin.H{"token": token})
+	_, _ = shared.Collection(shared.PasswordResetsCollection).DeleteMany(ctx, bson.M{"email": body.Email})
+	if err := shared.InsertOne(ctx, shared.Collection(shared.PasswordResetsCollection), resetDoc); err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to create password reset")
+		return
+	}
+
+	response := gin.H{"accepted": true}
+	// This opt-in exists only for isolated local development. Production must
+	// deliver the token out-of-band and leave this disabled.
+	if shared.EnvBool("PASSWORD_RESET_DEV_EXPOSE_TOKEN", false) {
+		response["token"] = token
+	} else if err := deliverPasswordReset(body.Email, token); err != nil {
+		log.Printf("[auth] password reset delivery failed: %v", err)
+		_ = shared.DeleteByID(ctx, shared.Collection(shared.PasswordResetsCollection), tokenHash)
+	}
+	c.JSON(http.StatusAccepted, response)
 }
 
 func ValidatePasswordReset(c *gin.Context) {
@@ -276,7 +301,7 @@ func ValidatePasswordReset(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
 
-	reset, err := shared.FindOne(ctx, shared.Collection(shared.PasswordResetsCollection), bson.M{"token": token})
+	reset, err := shared.FindOne(ctx, shared.Collection(shared.PasswordResetsCollection), passwordResetFilter(token, time.Now().UTC()))
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{"valid": false})
 		return
@@ -290,17 +315,20 @@ func ConfirmPasswordReset(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
 		return
 	}
-	if body.NewPassword == "" {
-		shared.RespondError(c, http.StatusBadRequest, "New password required")
+	if len(strings.TrimSpace(body.NewPassword)) < 8 {
+		shared.RespondError(c, http.StatusBadRequest, "New password must contain at least 8 characters")
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
 	defer cancel()
 
-	reset, err := shared.FindOne(ctx, shared.Collection(shared.PasswordResetsCollection), bson.M{"token": body.Token})
+	var reset bson.M
+	err := shared.Collection(shared.PasswordResetsCollection).
+		FindOneAndDelete(ctx, passwordResetFilter(body.Token, time.Now().UTC())).
+		Decode(&reset)
 	if err != nil {
-		shared.RespondError(c, http.StatusNotFound, "Invalid token")
+		shared.RespondError(c, http.StatusNotFound, "Invalid or expired token")
 		return
 	}
 
@@ -326,8 +354,28 @@ func ConfirmPasswordReset(c *gin.Context) {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to reset password")
 		return
 	}
-	_ = shared.DeleteByID(ctx, shared.Collection(shared.PasswordResetsCollection), body.Token)
+	_ = platformauth.RevokeUserSessions(ctx, userID)
 	c.JSON(http.StatusOK, gin.H{"success": true})
+}
+
+func newPasswordResetToken() (string, error) {
+	value := make([]byte, 32)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(value), nil
+}
+
+func hashPasswordResetToken(token string) string {
+	digest := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return hex.EncodeToString(digest[:])
+}
+
+func passwordResetFilter(token string, now time.Time) bson.M {
+	return bson.M{
+		"tokenHash": hashPasswordResetToken(token),
+		"expiresAt": bson.M{"$gt": now.UTC()},
+	}
 }
 
 func sanitizeUser(user bson.M) bson.M {

@@ -9,7 +9,8 @@ import (
 	"testing"
 	"time"
 
-	scmmodels "releaseaapi/internal/features/scm/models"
+	scmmodels "releaseaapi/internal/platform/models"
+	"releaseaapi/internal/platform/shared"
 
 	"github.com/gin-gonic/gin"
 	"go.mongodb.org/mongo-driver/bson"
@@ -18,6 +19,7 @@ import (
 
 func TestCreateServiceGitOpsPullRequestReturnsPullRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	stubGitOpsRepositoryPolicyReady(t)
 
 	previousFindService := findServiceForDesiredState
 	previousFindRules := findRulesForDesiredState
@@ -139,10 +141,12 @@ func TestCreateServiceGitOpsPullRequestReturnsNotFound(t *testing.T) {
 }
 
 func TestCreateServiceGitOpsPullRequestRejectsInvalidDesiredState(t *testing.T) {
+	stubGitOpsRepositoryPolicyReady(t)
 	gin.SetMode(gin.TestMode)
 
 	previousFindService := findServiceForDesiredState
 	previousFindRules := findRulesForDesiredState
+	previousOpen := openServiceDesiredStatePullRequest
 	findServiceForDesiredState = func(context.Context, string) (bson.M, error) {
 		return bson.M{
 			"id":             "svc-1",
@@ -159,9 +163,16 @@ func TestCreateServiceGitOpsPullRequestRejectsInvalidDesiredState(t *testing.T) 
 	findRulesForDesiredState = func(context.Context, string) ([]bson.M, error) {
 		return []bson.M{}, nil
 	}
+	openServiceDesiredStatePullRequest = func(context.Context, bson.M, []bson.M, gitOpsPullRequestPayload) (*scmmodels.DesiredStatePullRequestResponse, error) {
+		return nil, serviceDesiredStateValidationError{Validation: serviceDesiredStateValidation{
+			Status:  "invalid",
+			Summary: "Desired state is invalid.",
+		}}
+	}
 	defer func() {
 		findServiceForDesiredState = previousFindService
 		findRulesForDesiredState = previousFindRules
+		openServiceDesiredStatePullRequest = previousOpen
 	}()
 
 	recorder := httptest.NewRecorder()
@@ -178,4 +189,16 @@ func TestCreateServiceGitOpsPullRequestRejectsInvalidDesiredState(t *testing.T) 
 	if !strings.Contains(recorder.Body.String(), "GITOPS_DESIRED_STATE_INVALID") {
 		t.Fatalf("response should contain GITOPS_DESIRED_STATE_INVALID: %s", recorder.Body.String())
 	}
+}
+
+func stubGitOpsRepositoryPolicyReady(t *testing.T) {
+	t.Helper()
+	previousPolicy := ensureGitOpsRepositoryPolicyReadyForPullRequest
+	previousAudit := recordServiceGitOpsAudit
+	ensureGitOpsRepositoryPolicyReadyForPullRequest = func(context.Context, bson.M) error { return nil }
+	recordServiceGitOpsAudit = func(context.Context, shared.AuditEvent) {}
+	t.Cleanup(func() {
+		ensureGitOpsRepositoryPolicyReadyForPullRequest = previousPolicy
+		recordServiceGitOpsAudit = previousAudit
+	})
 }

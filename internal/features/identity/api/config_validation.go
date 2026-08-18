@@ -93,6 +93,10 @@ func loadIDPConfig(ctx context.Context) (string, idpConfig, error) {
 	if err != nil {
 		return "", idpConfig{}, err
 	}
+	config.OIDC.ClientSecret, err = shared.DecryptSensitiveValue(config.OIDC.ClientSecret)
+	if err != nil {
+		return "", idpConfig{}, fmt.Errorf("decrypt OIDC client secret: %w", err)
+	}
 	config.normalize()
 	return id, config, nil
 }

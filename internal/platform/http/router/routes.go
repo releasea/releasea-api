@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	ai "releaseaapi/internal/features/ai/api"
 	audit "releaseaapi/internal/features/audit/api"
 	auth "releaseaapi/internal/features/auth/api"
 	credentials "releaseaapi/internal/features/credentials/api"
@@ -136,6 +137,19 @@ func registerProtectedRoutes(rg *gin.RouterGroup) {
 	registerIdentityRoutes(rg)
 	registerAuditRoutes(rg)
 	registerOperationsRoutes(rg)
+	registerAIRoutes(rg)
+}
+
+func registerAIRoutes(rg *gin.RouterGroup) {
+	admin := platformauth.RequireRoles("admin")
+	rg.GET("/ai/providers", admin, ai.ListProviders)
+	rg.POST("/ai/providers", admin, ai.CreateProvider)
+	rg.PUT("/ai/providers/:id", admin, ai.UpdateProvider)
+	rg.DELETE("/ai/providers/:id", admin, ai.DeleteProvider)
+	rg.POST("/ai/providers/:id/test", admin, ai.TestProvider)
+	rg.GET("/ai/usage", admin, ai.GetUsage)
+	rg.GET("/services/:id/ai/analyses", ai.ListServiceAnalyses)
+	rg.POST("/services/:id/ai/analyses", platformauth.RequireRoles("admin", "developer"), ai.CreateServiceAnalysis)
 }
 
 func registerWorkerRoutes(rg *gin.RouterGroup) {

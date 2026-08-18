@@ -40,6 +40,7 @@ Common targets:
 - `make test-race`
 - `make architecture-check`
 - `make coverage-check`
+- `make vulncheck`
 - `make lint`
 
 ## Environment Variables
@@ -80,6 +81,7 @@ Behavior summary:
 - First run on an empty database: the API bootstraps base data automatically.
 - Subsequent restarts: no reset is performed by default.
 - Forced reset or restore: set `RELEASEA_RESET=true` deliberately.
+- Production-like environments (`production`, `prod`, `staging`, `stage`, or `GIN_MODE=release`) refuse to start with default signing, encryption, worker, or administrator credentials.
 
 ### Bootstrap Identity
 

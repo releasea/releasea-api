@@ -2,7 +2,7 @@ SHELL := /bin/bash
 
 GO_FILES := $(shell find cmd internal -type f -name '*.go')
 
-.PHONY: help fmt fmt-check vet test test-race lint staticcheck architecture-check coverage-check quality
+.PHONY: help fmt fmt-check vet test test-race lint staticcheck architecture-check coverage-check vulncheck quality
 
 help:
 	@echo "Targets:"
@@ -15,7 +15,8 @@ help:
 	@echo "  lint             - Run golangci-lint (requires binary installed)"
 	@echo "  architecture-check - Validate architecture guardrails"
 	@echo "  coverage-check   - Validate feature coverage targets"
-	@echo "  quality          - Run fmt-check + vet + test-race + architecture-check + coverage-check"
+	@echo "  vulncheck        - Scan reachable Go code for known vulnerabilities"
+	@echo "  quality          - Run formatting, tests, architecture, coverage, and vulnerability checks"
 
 fmt:
 	@gofmt -w $(GO_FILES)
@@ -46,4 +47,7 @@ architecture-check:
 coverage-check:
 	@./scripts/check-feature-coverage.sh
 
-quality: fmt-check vet test-race architecture-check coverage-check
+vulncheck:
+	@go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+
+quality: fmt-check vet test-race architecture-check coverage-check vulncheck

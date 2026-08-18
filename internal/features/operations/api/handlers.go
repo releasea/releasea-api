@@ -26,7 +26,7 @@ func GetOperations(c *gin.Context) {
 		filter["type"] = opType
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	fairnessMode := strings.ToLower(strings.TrimSpace(c.Query("fairness")))
@@ -112,7 +112,7 @@ func GetOperation(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	item, err := shared.FindOne(ctx, shared.Collection(shared.OperationsCollection), bson.M{"id": id})
 	if err != nil {
@@ -158,7 +158,7 @@ func UpdateOperationStatus(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	op, err := shared.FindOne(ctx, shared.Collection(shared.OperationsCollection), bson.M{"id": id})

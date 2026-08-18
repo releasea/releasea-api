@@ -268,7 +268,7 @@ func GetGovernanceSettings(c *gin.Context) {
 	if !requireAdminRequest(c) {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	settings, err := shared.FindOne(ctx, shared.Collection(shared.GovernanceSettingsCollection), bson.M{})
 	if err != nil {
@@ -287,7 +287,7 @@ func UpdateGovernanceSettings(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	settings, err := shared.FindOne(ctx, shared.Collection(shared.GovernanceSettingsCollection), bson.M{})
 	if err != nil {
@@ -362,7 +362,7 @@ func UpdateGovernanceSettings(c *gin.Context) {
 }
 
 func GetGovernanceApprovals(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	filter := bson.M{}
@@ -422,7 +422,7 @@ func CreateGovernanceApproval(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	settings, err := shared.LoadGovernanceSettings(ctx)
 	if err != nil {
@@ -494,7 +494,7 @@ func ReviewGovernanceApproval(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	approval, err := shared.FindOne(ctx, shared.Collection(shared.GovernanceApprovalsCollection), bson.M{"id": approvalID})
@@ -617,7 +617,7 @@ func DeleteGovernanceApproval(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Approval ID required")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	approval, _ := shared.FindOne(ctx, shared.Collection(shared.GovernanceApprovalsCollection), bson.M{"id": approvalID})
 	if err := shared.DeleteByID(ctx, shared.Collection(shared.GovernanceApprovalsCollection), approvalID); err != nil {
@@ -644,7 +644,7 @@ func GetGovernanceAudit(c *gin.Context) {
 	if !requireAdminRequest(c) {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	governanceEntries, err := findGovernanceAuditEntries(ctx)
 	if err != nil {

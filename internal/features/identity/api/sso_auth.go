@@ -38,7 +38,7 @@ type oidcTokenResponse struct {
 }
 
 func GetSSOConfig(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	_, cfg, err := loadIDPConfig(ctx)
@@ -58,7 +58,7 @@ func GetSSOConfig(c *gin.Context) {
 }
 
 func StartSSO(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
 	defer cancel()
 
 	_, cfg, err := loadIDPConfig(ctx)
@@ -131,7 +131,7 @@ func CompleteSSO(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 25*time.Second)
 	defer cancel()
 
 	stateDoc, err := consumeSSOState(ctx, state)
@@ -245,7 +245,7 @@ func ExchangeSSOTicket(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	doc, err := consumeSSOTicket(ctx, payload.Ticket)

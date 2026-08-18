@@ -30,7 +30,7 @@ func respondIfObservedRuleManagementBlocked(c *gin.Context, service bson.M) bool
 }
 
 func GetRules(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	items, err := shared.FindAll(ctx, shared.Collection(shared.RulesCollection), bson.M{})
 	if err != nil {
@@ -46,7 +46,7 @@ func GetRule(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Rule ID required")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	item, err := shared.FindOne(ctx, shared.Collection(shared.RulesCollection), bson.M{"id": ruleID})
 	if err != nil {
@@ -79,7 +79,7 @@ func AppendRuleLogs(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	update := bson.M{
@@ -138,7 +138,7 @@ func createRuleFromPayload(c *gin.Context, payload map[string]interface{}, servi
 		name = fmt.Sprintf("%s-rule", serviceID)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	service, err := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID})
@@ -368,7 +368,7 @@ func UpdateRule(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	existing, err := shared.FindOne(ctx, shared.Collection(shared.RulesCollection), bson.M{"id": ruleID})
@@ -445,7 +445,7 @@ func DeleteRule(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	rule, err := shared.FindOne(ctx, shared.Collection(shared.RulesCollection), bson.M{"id": ruleID})
@@ -613,7 +613,7 @@ func PublishRule(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	rule, err := shared.FindOne(ctx, shared.Collection(shared.RulesCollection), bson.M{"id": ruleID})

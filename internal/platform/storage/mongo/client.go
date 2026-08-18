@@ -50,6 +50,13 @@ func Mongo() *mongo.Client {
 	return mongoClient
 }
 
+func Disconnect(ctx context.Context) error {
+	if mongoClient == nil {
+		return nil
+	}
+	return mongoClient.Disconnect(ctx)
+}
+
 func isTLSSkipVerifyEnabled() bool {
 	value := strings.ToLower(strings.TrimSpace(os.Getenv("MONGO_TLS_INSECURE")))
 	return value == "true" || value == "1" || value == "yes"

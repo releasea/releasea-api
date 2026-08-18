@@ -55,6 +55,7 @@ type deployPolicyEvaluationResult struct {
 }
 
 var loadGovernanceSettings = shared.LoadGovernanceSettings
+var findLatestDeployPolicyCredential = shared.FindLatestPlatformCredential
 var recordGovernancePolicyBlockAudit = func(
 	ctx context.Context,
 	serviceID string,
@@ -710,7 +711,7 @@ func resolveDeployPolicyCredential(ctx context.Context, collectionName, serviceC
 	} else if found {
 		return credential, nil
 	}
-	credential, err := shared.FindLatestPlatformCredential(ctx, collectionName)
+	credential, err := findLatestDeployPolicyCredential(ctx, collectionName)
 	if errors.Is(err, mongo.ErrNoDocuments) {
 		return bson.M{}, nil
 	}

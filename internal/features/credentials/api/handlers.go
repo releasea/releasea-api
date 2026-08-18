@@ -62,6 +62,16 @@ func CreateScmCredential(c *gin.Context) {
 		return
 	}
 	scope := normalizeScope(payload.Scope)
+	encryptedToken, err := encryptOptionalCredentialValue(strings.TrimSpace(payload.Token))
+	if err != nil {
+		shared.RespondError(c, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	encryptedPrivateKey, err := encryptOptionalCredentialValue(strings.TrimSpace(payload.PrivateKey))
+	if err != nil {
+		shared.RespondError(c, http.StatusServiceUnavailable, err.Error())
+		return
+	}
 
 	id := "scm-cred-" + uuid.NewString()
 	now := shared.NowISO()
@@ -71,8 +81,8 @@ func CreateScmCredential(c *gin.Context) {
 		"name":       strings.TrimSpace(payload.Name),
 		"provider":   payload.Provider,
 		"authType":   payload.AuthType,
-		"token":      strings.TrimSpace(payload.Token),
-		"privateKey": strings.TrimSpace(payload.PrivateKey),
+		"token":      encryptedToken,
+		"privateKey": encryptedPrivateKey,
 		"scope":      scope,
 		"projectId":  strings.TrimSpace(payload.ProjectID),
 		"serviceId":  strings.TrimSpace(payload.ServiceID),
@@ -132,10 +142,20 @@ func UpdateScmCredential(c *gin.Context) {
 		update["authType"] = nextAuthType
 	}
 	if payload.Token != "" {
-		update["token"] = payload.Token
+		encrypted, err := shared.EncryptSensitiveValue(strings.TrimSpace(payload.Token))
+		if err != nil {
+			shared.RespondError(c, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		update["token"] = encrypted
 	}
 	if payload.PrivateKey != "" {
-		update["privateKey"] = payload.PrivateKey
+		encrypted, err := shared.EncryptSensitiveValue(strings.TrimSpace(payload.PrivateKey))
+		if err != nil {
+			shared.RespondError(c, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		update["privateKey"] = encrypted
 	}
 	if payload.Scope != "" {
 		update["scope"] = normalizeScope(payload.Scope)
@@ -217,6 +237,11 @@ func CreateRegistryCredential(c *gin.Context) {
 		return
 	}
 	scope := normalizeScope(payload.Scope)
+	encryptedPassword, err := shared.EncryptSensitiveValue(strings.TrimSpace(payload.Password))
+	if err != nil {
+		shared.RespondError(c, http.StatusServiceUnavailable, err.Error())
+		return
+	}
 	id := "reg-cred-" + uuid.NewString()
 	now := shared.NowISO()
 	doc := bson.M{
@@ -226,7 +251,7 @@ func CreateRegistryCredential(c *gin.Context) {
 		"provider":    payload.Provider,
 		"registryUrl": strings.TrimSpace(payload.RegistryURL),
 		"username":    strings.TrimSpace(payload.Username),
-		"password":    strings.TrimSpace(payload.Password),
+		"password":    encryptedPassword,
 		"scope":       scope,
 		"projectId":   strings.TrimSpace(payload.ProjectID),
 		"serviceId":   strings.TrimSpace(payload.ServiceID),
@@ -285,7 +310,12 @@ func UpdateRegistryCredential(c *gin.Context) {
 		update["username"] = payload.Username
 	}
 	if payload.Password != "" {
-		update["password"] = payload.Password
+		encrypted, err := shared.EncryptSensitiveValue(strings.TrimSpace(payload.Password))
+		if err != nil {
+			shared.RespondError(c, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+		update["password"] = encrypted
 	}
 	if payload.Scope != "" {
 		update["scope"] = normalizeScope(payload.Scope)
@@ -371,6 +401,16 @@ func WorkerCredentials(c *gin.Context) {
 	if regErr != nil {
 		log.Printf("[worker-credentials] service=%s failed to resolve registry credential: %v", serviceModel.ID, regErr)
 		regCred = bson.M{}
+	}
+	scmCred, scmErr = shared.DecryptCredentialDocument(scmCred, "token", "privateKey")
+	if scmErr != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to decrypt SCM credential")
+		return
+	}
+	regCred, regErr = shared.DecryptCredentialDocument(regCred, "password")
+	if regErr != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to decrypt registry credential")
+		return
 	}
 	template, _ := deploys.ResolveDeployTemplate(ctx, service)
 	secretProvider, _ := deploys.ResolveSecretProvider(ctx, service)
@@ -518,6 +558,13 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func encryptOptionalCredentialValue(value string) (string, error) {
+	if strings.TrimSpace(value) == "" {
+		return "", nil
+	}
+	return shared.EncryptSensitiveValue(value)
 }
 
 func normalizeScope(scope string) string {

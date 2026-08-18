@@ -2,7 +2,10 @@ package security
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -11,6 +14,8 @@ import (
 	"releaseaapi/internal/platform/shared"
 
 	"github.com/gin-gonic/gin"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 const (
@@ -19,16 +24,24 @@ const (
 )
 
 type idempotencyResponse struct {
-	status      int
-	contentType string
-	body        []byte
+	Status      int    `bson:"status"`
+	ContentType string `bson:"contentType,omitempty"`
+	Body        []byte `bson:"body,omitempty"`
 }
 
 type idempotencyEntry struct {
-	state     string
-	expiresAt time.Time
-	response  idempotencyResponse
-	updatedAt time.Time
+	Key       string              `bson:"_id,omitempty"`
+	State     string              `bson:"state"`
+	ExpiresAt time.Time           `bson:"expiresAt"`
+	Response  idempotencyResponse `bson:"response,omitempty"`
+	UpdatedAt time.Time           `bson:"updatedAt"`
+}
+
+type idempotencyBackend interface {
+	start(context.Context, string, time.Time) (bool, error)
+	complete(context.Context, string, time.Time, idempotencyResponse) error
+	fail(context.Context, string) error
+	lookup(context.Context, string, time.Time) (idempotencyEntry, bool, error)
 }
 
 type idempotencyStore struct {
@@ -38,6 +51,15 @@ type idempotencyStore struct {
 
 var idempotencyState = &idempotencyStore{
 	entries: map[string]idempotencyEntry{},
+}
+
+var mongoIdempotencyState mongoIdempotencyStore
+
+func activeIdempotencyBackend() idempotencyBackend {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("IDEMPOTENCY_BACKEND")), "mongo") {
+		return mongoIdempotencyState
+	}
+	return idempotencyState
 }
 
 func RequireIdempotencyKey() gin.HandlerFunc {
@@ -62,9 +84,15 @@ func RequireIdempotencyKey() gin.HandlerFunc {
 		fullKey := composeIdempotencyStoreKey(c, key)
 		now := time.Now().UTC()
 
-		shouldProceed := idempotencyState.start(fullKey, now)
+		backend := activeIdempotencyBackend()
+		shouldProceed, err := backend.start(c.Request.Context(), fullKey, now)
+		if err != nil {
+			shared.RespondError(c, http.StatusServiceUnavailable, "Idempotency service unavailable")
+			c.Abort()
+			return
+		}
 		if !shouldProceed {
-			if replayed, ok := idempotencyState.replay(c, fullKey, now); ok {
+			if replayed, ok := replayIdempotentResponse(c, backend, fullKey, now); ok {
 				if replayed {
 					return
 				}
@@ -83,14 +111,14 @@ func RequireIdempotencyKey() gin.HandlerFunc {
 
 		status := recorder.status()
 		if status >= 500 {
-			idempotencyState.fail(fullKey, now)
+			_ = backend.fail(c.Request.Context(), fullKey)
 			return
 		}
 
-		idempotencyState.complete(fullKey, now, idempotencyResponse{
-			status:      status,
-			contentType: recorder.header().Get(httpheaders.HeaderContentType),
-			body:        recorder.body.Bytes(),
+		_ = backend.complete(c.Request.Context(), fullKey, now, idempotencyResponse{
+			Status:      status,
+			ContentType: recorder.header().Get(httpheaders.HeaderContentType),
+			Body:        recorder.body.Bytes(),
 		})
 	}
 }
@@ -114,73 +142,134 @@ func composeIdempotencyStoreKey(c *gin.Context, provided string) string {
 
 func (s *idempotencyStore) cleanup(now time.Time) {
 	for key, entry := range s.entries {
-		if now.After(entry.expiresAt) {
+		if now.After(entry.ExpiresAt) {
 			delete(s.entries, key)
 		}
 	}
 }
 
-func (s *idempotencyStore) start(key string, now time.Time) bool {
+func (s *idempotencyStore) start(_ context.Context, key string, now time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cleanup(now)
 
 	if entry, exists := s.entries[key]; exists {
-		if entry.state == "completed" {
-			return false
+		if entry.State == "completed" {
+			return false, nil
 		}
-		if entry.state == "processing" {
-			return false
+		if entry.State == "processing" {
+			return false, nil
 		}
 	}
 
 	s.entries[key] = idempotencyEntry{
-		state:     "processing",
-		expiresAt: now.Add(defaultIdempotencyTTL),
-		updatedAt: now,
+		Key:       key,
+		State:     "processing",
+		ExpiresAt: now.Add(defaultIdempotencyTTL),
+		UpdatedAt: now,
 	}
-	return true
+	return true, nil
 }
 
-func (s *idempotencyStore) complete(key string, now time.Time, response idempotencyResponse) {
+func (s *idempotencyStore) complete(_ context.Context, key string, now time.Time, response idempotencyResponse) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.entries[key] = idempotencyEntry{
-		state:     "completed",
-		expiresAt: now.Add(defaultIdempotencyTTL),
-		updatedAt: now,
-		response:  response,
+		Key:       key,
+		State:     "completed",
+		ExpiresAt: now.Add(defaultIdempotencyTTL),
+		UpdatedAt: now,
+		Response:  response,
 	}
+	return nil
 }
 
-func (s *idempotencyStore) fail(key string, now time.Time) {
+func (s *idempotencyStore) fail(_ context.Context, key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry, exists := s.entries[key]
 	if !exists {
-		return
+		return nil
 	}
-	if entry.state == "processing" {
+	if entry.State == "processing" {
 		delete(s.entries, key)
 	}
+	return nil
 }
 
-func (s *idempotencyStore) replay(c *gin.Context, key string, now time.Time) (bool, bool) {
+func (s *idempotencyStore) lookup(_ context.Context, key string, now time.Time) (idempotencyEntry, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.cleanup(now)
 
 	entry, exists := s.entries[key]
-	if !exists || entry.state != "completed" {
-		return false, false
+	if !exists {
+		return idempotencyEntry{}, false, nil
 	}
-	if entry.response.contentType != "" {
-		c.Header(httpheaders.HeaderContentType, entry.response.contentType)
+	return entry, true, nil
+}
+
+type mongoIdempotencyStore struct{}
+
+func (mongoIdempotencyStore) start(ctx context.Context, key string, now time.Time) (bool, error) {
+	entry := idempotencyEntry{Key: key, State: "processing", ExpiresAt: now.Add(defaultIdempotencyTTL), UpdatedAt: now}
+	_, err := shared.Collection(shared.IdempotencyKeysCollection).InsertOne(ctx, entry)
+	if err == nil {
+		return true, nil
+	}
+	if !mongo.IsDuplicateKeyError(err) {
+		return false, err
+	}
+	// TTL deletion is asynchronous. Remove a logically expired record and retry once.
+	result, deleteErr := shared.Collection(shared.IdempotencyKeysCollection).DeleteOne(ctx, bson.M{"_id": key, "expiresAt": bson.M{"$lte": now}})
+	if deleteErr != nil {
+		return false, deleteErr
+	}
+	if result.DeletedCount == 1 {
+		_, err = shared.Collection(shared.IdempotencyKeysCollection).InsertOne(ctx, entry)
+		if err == nil {
+			return true, nil
+		}
+		if !mongo.IsDuplicateKeyError(err) {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
+func (mongoIdempotencyStore) complete(ctx context.Context, key string, now time.Time, response idempotencyResponse) error {
+	_, err := shared.Collection(shared.IdempotencyKeysCollection).UpdateByID(ctx, key, bson.M{"$set": bson.M{
+		"state": "completed", "expiresAt": now.Add(defaultIdempotencyTTL), "updatedAt": now, "response": response,
+	}})
+	return err
+}
+
+func (mongoIdempotencyStore) fail(ctx context.Context, key string) error {
+	_, err := shared.Collection(shared.IdempotencyKeysCollection).DeleteOne(ctx, bson.M{"_id": key, "state": "processing"})
+	return err
+}
+
+func (mongoIdempotencyStore) lookup(ctx context.Context, key string, now time.Time) (idempotencyEntry, bool, error) {
+	var entry idempotencyEntry
+	err := shared.Collection(shared.IdempotencyKeysCollection).FindOne(ctx, bson.M{"_id": key, "expiresAt": bson.M{"$gt": now}}).Decode(&entry)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return idempotencyEntry{}, false, nil
+	}
+	return entry, err == nil, err
+}
+
+func replayIdempotentResponse(c *gin.Context, backend idempotencyBackend, key string, now time.Time) (bool, bool) {
+	entry, exists, err := backend.lookup(c.Request.Context(), key, now)
+	if err != nil || !exists || entry.State != "completed" {
+		return false, err == nil
+	}
+	if entry.Response.ContentType != "" {
+		c.Header(httpheaders.HeaderContentType, entry.Response.ContentType)
 	}
 	c.Header("X-Idempotency-Replayed", "true")
-	c.Status(entry.response.status)
-	if len(entry.response.body) > 0 {
-		_, _ = c.Writer.Write(entry.response.body)
+	c.Status(entry.Response.Status)
+	if len(entry.Response.Body) > 0 {
+		_, _ = c.Writer.Write(entry.Response.Body)
 	}
 	c.Abort()
 	return true, true

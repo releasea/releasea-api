@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	scmmodels "releaseaapi/internal/features/scm/models"
+	scmmodels "releaseaapi/internal/platform/models"
 	scmproviders "releaseaapi/internal/platform/providers/scm"
 	"releaseaapi/internal/platform/shared"
 
@@ -107,7 +107,10 @@ func resolveScmRuntimeToken(ctx context.Context, scmCredentialID, projectID, cap
 	if err != nil {
 		return nil, "", http.StatusBadRequest, err
 	}
-	token := strings.TrimSpace(shared.StringValue(scmCred["token"]))
+	token, err := shared.DecryptSensitiveValue(strings.TrimSpace(shared.StringValue(scmCred["token"])))
+	if err != nil {
+		return nil, "", http.StatusInternalServerError, errors.New("failed to decrypt scm credential")
+	}
 	if token == "" {
 		return nil, "", http.StatusBadRequest, errors.New("scm credential missing token")
 	}

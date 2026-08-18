@@ -12,7 +12,7 @@ import (
 )
 
 func GetPlatformSettings(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	settings, err := shared.FindOne(ctx, shared.Collection(shared.PlatformSettingsCollection), bson.M{})
 	if err != nil {
@@ -28,7 +28,7 @@ func UpdatePlatformSettings(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	settings, err := shared.FindOne(ctx, shared.Collection(shared.PlatformSettingsCollection), bson.M{})
 	if err != nil {
@@ -49,7 +49,7 @@ func UpdatePlatformSettings(c *gin.Context) {
 }
 
 func GetRuntimeProfiles(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	profiles, err := shared.FindAll(ctx, shared.Collection(shared.RuntimeProfilesCollection), bson.M{})
 	if err != nil {
@@ -72,7 +72,7 @@ func CreateRuntimeProfile(c *gin.Context) {
 	payload["createdAt"] = now
 	payload["updatedAt"] = now
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	if err := shared.InsertOne(ctx, shared.Collection(shared.RuntimeProfilesCollection), payload); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to create runtime profile")
@@ -94,7 +94,7 @@ func UpdateRuntimeProfile(c *gin.Context) {
 	}
 	payload["updatedAt"] = shared.NowISO()
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	if err := shared.UpdateByID(ctx, shared.Collection(shared.RuntimeProfilesCollection), id, payload); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to update runtime profile")
@@ -110,7 +110,7 @@ func DeleteRuntimeProfile(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Profile ID required")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	if err := shared.DeleteByID(ctx, shared.Collection(shared.RuntimeProfilesCollection), id); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to delete runtime profile")

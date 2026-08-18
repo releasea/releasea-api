@@ -74,7 +74,7 @@ var evaluateServiceDeployPolicyCheck = func(
 // Services
 
 func GetServices(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	filter := bson.M{}
@@ -143,7 +143,7 @@ func GetService(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Service ID required")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	service, err := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID})
 	if err != nil {
@@ -234,9 +234,9 @@ func CreateService(c *gin.Context) {
 	} else if _, ok := payload["pauseIdleTimeoutSeconds"]; !ok {
 		payload["pauseIdleTimeoutSeconds"] = pauseIdleDefaultTimeoutSeconds()
 	}
-	normalizeServiceRuntimeFields(payload)
+	normalizeServiceRuntimeFields(c.Request.Context(), payload)
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	if err := shared.InsertOne(ctx, shared.Collection(shared.ServicesCollection), payload); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to create service")
@@ -266,7 +266,7 @@ func UpdateService(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Service ID required")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	existing, err := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID})
 	if err != nil {
@@ -317,7 +317,7 @@ func UpdateService(c *gin.Context) {
 	if scheduleFieldsPresent {
 		payload["deployTemplateId"] = "tpl-cronjob"
 	}
-	normalizeServiceRuntimeFields(payload)
+	normalizeServiceRuntimeFields(c.Request.Context(), payload)
 	previousStrategy := normalizedServiceStrategyFromRaw(existing["deploymentStrategy"])
 	nextStrategy := normalizedServiceStrategy{}
 	strategyPayloadProvided := false
@@ -435,8 +435,8 @@ func resolveDeployTemplateID(payload bson.M) string {
 	return ""
 }
 
-func normalizeServiceRuntimeFields(payload bson.M) {
-	resolveProfileResources(payload)
+func normalizeServiceRuntimeFields(ctx context.Context, payload bson.M) {
+	resolveProfileResources(ctx, payload)
 	normalizeReplicaBounds(payload)
 	normalizePauseIdleTimeout(payload)
 	normalizeDeploymentStrategy(payload)
@@ -477,12 +477,12 @@ func pauseIdleDefaultTimeoutSeconds() int {
 }
 
 // resolveProfileResources looks up the runtime profile by profileId and sets cpu/memory on the payload.
-func resolveProfileResources(payload bson.M) {
+func resolveProfileResources(parent context.Context, payload bson.M) {
 	profileID := shared.StringValue(payload["profileId"])
 	if profileID == "" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(parent, shared.DBTimeout)
 	defer cancel()
 	profile, err := shared.FindOne(ctx, shared.Collection(shared.RuntimeProfilesCollection), bson.M{"_id": profileID})
 	if err != nil || profile == nil {
@@ -1159,7 +1159,7 @@ func DeleteService(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Service ID required")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	service, err := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID})
@@ -1277,7 +1277,7 @@ func GetServiceMetrics(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	service, err := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID})
@@ -1607,7 +1607,7 @@ func GetServiceLogs(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	service, err := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID})
@@ -1698,7 +1698,7 @@ func GetServicePods(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	service, err := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID})
@@ -1762,7 +1762,7 @@ func GetServiceBuilds(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	builds, err := shared.FindAllSorted(ctx, shared.Collection(shared.BuildsCollection), bson.M{"serviceId": serviceID}, bson.D{{Key: "createdAt", Value: -1}})
@@ -1780,7 +1780,7 @@ func GetServiceGovernanceEvents(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	if _, err := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID}); err != nil {
@@ -1827,7 +1827,7 @@ func GetServiceDeployPolicyCheck(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	service, err := findServiceForDeployPolicyCheck(ctx, serviceID)

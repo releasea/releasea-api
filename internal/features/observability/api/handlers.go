@@ -11,7 +11,7 @@ import (
 )
 
 func GetLogs(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	items, err := shared.FindAll(ctx, shared.Collection(shared.LogsCollection), bson.M{})
 	if err != nil {

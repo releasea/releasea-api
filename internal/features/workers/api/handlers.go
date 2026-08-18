@@ -24,7 +24,7 @@ import (
 // Workers
 
 func GetWorkers(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	items, err := shared.FindAll(ctx, shared.Collection(shared.WorkersCollection), bson.M{})
 	if err != nil {
@@ -78,7 +78,7 @@ func UpdateWorker(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	payload["updatedAt"] = shared.NowISO()
 	if err := shared.UpdateByID(ctx, shared.Collection(shared.WorkersCollection), workerID, payload); err != nil {
@@ -95,7 +95,7 @@ func DeleteWorker(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Worker ID required")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	worker, err := shared.FindOne(ctx, shared.Collection(shared.WorkersCollection), bson.M{"id": workerID})
 	if err != nil {
@@ -130,7 +130,7 @@ func RestartWorker(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	worker, err := shared.FindOne(ctx, shared.Collection(shared.WorkersCollection), bson.M{"id": workerID})
@@ -274,7 +274,7 @@ func markRegistrationInactive(ctx context.Context, worker bson.M, now time.Time)
 }
 
 func GetWorkerRegistrations(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	items, err := shared.FindAll(ctx, shared.Collection(shared.WorkerRegistrationsCollection), bson.M{
 		"status": bson.M{"$ne": "revoked"},
@@ -329,7 +329,7 @@ func CreateWorkerRegistration(c *gin.Context) {
 	doc["tokenHash"] = string(hashedToken)
 	doc["tokenHint"] = tokenHintValue
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	if err := shared.InsertOne(ctx, shared.Collection(shared.WorkerRegistrationsCollection), doc); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to create registration")
@@ -348,7 +348,7 @@ func DeleteWorkerRegistration(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	result, err := shared.Collection(shared.WorkerRegistrationsCollection).DeleteOne(
@@ -445,7 +445,7 @@ func Heartbeat(c *gin.Context) {
 	}
 
 	now := shared.NowISO()
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	workerDoc := bson.M{
@@ -795,7 +795,7 @@ func RegisterBuild(c *gin.Context) {
 		"createdAt":   now,
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	if err := shared.InsertOne(ctx, shared.Collection(shared.BuildsCollection), doc); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to register build")

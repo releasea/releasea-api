@@ -36,7 +36,7 @@ func TestIdpConnection(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
 	defer cancel()
 
 	configDoc, err := shared.FindOne(ctx, shared.Collection(shared.IdpConfigCollection), bson.M{})

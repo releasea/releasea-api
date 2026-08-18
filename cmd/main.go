@@ -41,9 +41,16 @@ func loadEnvFiles() {
 func main() {
 	loadEnvFiles()
 	cfg := config.LoadConfig()
+	if err := config.ValidateProductionSecurity(cfg); err != nil {
+		log.Fatalf("invalid production configuration: %v", err)
+	}
 
-	// Initialize Mongo (fatal if it fails)
-	mongostore.Mongo()
+	startupContext, startupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	if err := mongostore.Connect(startupContext); err != nil {
+		startupCancel()
+		log.Fatalf("failed to initialize MongoDB: %v", err)
+	}
+	startupCancel()
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -54,7 +61,9 @@ func main() {
 
 	// Ensure required initial data
 	bootstrap.Setup(cfg)
-	if err := bootstrap.EnsureIndexes(context.Background()); err != nil {
+	indexContext, indexCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer indexCancel()
+	if err := bootstrap.EnsureIndexes(indexContext); err != nil {
 		log.Fatalf("failed to ensure database indexes: %v", err)
 	}
 

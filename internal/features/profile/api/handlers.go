@@ -13,7 +13,7 @@ import (
 )
 
 func GetProfile(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	profile, profileID := loadProfile(ctx, c)
 	if profileID == "" {
@@ -30,7 +30,7 @@ func UpdateProfile(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	profile, id := loadProfile(ctx, c)
 	if id == "" {
@@ -80,7 +80,7 @@ func ChangePassword(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 	userID := authUserID(c)
 	if userID == "" {
@@ -124,7 +124,7 @@ func RevokeSession(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	profile, profileID := loadProfile(ctx, c)
@@ -162,7 +162,7 @@ func ConnectProvider(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	profile, profileID := loadProfile(ctx, c)
@@ -217,7 +217,7 @@ func DisconnectProvider(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	profile, profileID := loadProfile(ctx, c)
@@ -243,7 +243,7 @@ func DisconnectProvider(c *gin.Context) {
 }
 
 func DeleteProfile(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(context.Background(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
 	defer cancel()
 
 	profile, profileID := loadProfile(ctx, c)

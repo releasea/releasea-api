@@ -51,6 +51,8 @@ const (
 	BuildsCollection                  = "builds"
 	RuntimeProfilesCollection         = "runtime_profiles"
 	IdempotencyKeysCollection         = "idempotency_keys"
+	AIProvidersCollection             = "ai_providers"
+	AIAnalysesCollection              = "ai_analyses"
 )
 
 func RespondError(c *gin.Context, status int, msg string) {

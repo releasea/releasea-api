@@ -115,6 +115,28 @@ func CreateIdpConnection(c *gin.Context) {
 	c.JSON(http.StatusOK, payload)
 }
 
+func UpdateIdpConnection(c *gin.Context) {
+	id := c.Param("id")
+	var payload bson.M
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
+		return
+	}
+	delete(payload, "_id")
+	delete(payload, "id")
+	delete(payload, "createdAt")
+	payload["updatedAt"] = shared.NowISO()
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
+	defer cancel()
+	if err := shared.UpdateByID(ctx, shared.Collection(shared.IdpConnectionsCollection), id, payload); err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to update connection")
+		return
+	}
+	payload["id"] = id
+	c.JSON(http.StatusOK, payload)
+}
+
 func DeleteIdpConnection(c *gin.Context) {
 	id := c.Param("id")
 	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)

@@ -335,6 +335,7 @@ func registerIdentityRoutes(rg *gin.RouterGroup) {
 	rg.PUT("/identity/config", admin, identity.UpdateIdpConfig)
 	rg.GET("/identity/connections", admin, identity.GetIdpConnections)
 	rg.POST("/identity/connections", admin, identity.CreateIdpConnection)
+	rg.PUT("/identity/connections/:id", admin, identity.UpdateIdpConnection)
 	rg.DELETE("/identity/connections/:id", admin, identity.DeleteIdpConnection)
 	rg.GET("/identity/mappings", admin, identity.GetGroupMappings)
 	rg.POST("/identity/mappings", admin, identity.CreateGroupMapping)

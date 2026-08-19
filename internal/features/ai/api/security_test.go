@@ -1,8 +1,11 @@
 package ai
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+
+	"go.mongodb.org/mongo-driver/bson"
 )
 
 func TestValidateProviderURL(t *testing.T) {
@@ -49,5 +52,36 @@ func TestSanitizeValueDropsSensitiveKeys(t *testing.T) {
 	}
 	if nested["status"] != "ok" {
 		t.Fatal("safe field was removed")
+	}
+}
+
+func TestLimitServiceContextKeepsValidBoundedJSON(t *testing.T) {
+	value := serviceContext{
+		ServiceID: "svc-1",
+		Evidence: []evidence{
+			{ID: "service-config", Type: "service", Label: "Service", Data: bson.M{"message": strings.Repeat("a", 8000)}},
+			{ID: "runtime-logs", Type: "logs", Label: "Logs", Data: []string{strings.Repeat("b", 8000)}},
+		},
+	}
+	limited := limitServiceContext(value, 1200)
+	encoded := marshalContext(limited)
+	if len(encoded) > 1200 {
+		t.Fatalf("context exceeds limit: %d", len(encoded))
+	}
+	if !json.Valid([]byte(encoded)) {
+		t.Fatalf("context is not valid JSON: %s", encoded)
+	}
+	if !limited.Truncated || len(limited.Evidence) == 0 {
+		t.Fatalf("expected compacted evidence, got %#v", limited)
+	}
+}
+
+func TestAvailableProviderDocumentExcludesConnectionSecrets(t *testing.T) {
+	doc := bson.M{"id": "aip-1", "name": "Local", "type": "openai-compatible", "model": "llama", "default": true, "baseUrl": "http://private:11434/v1", "apiKey": "encrypted", "health": bson.M{"state": "healthy"}}
+	available := availableProviderDocument(doc)
+	for _, key := range []string{"apiKey", "baseUrl"} {
+		if _, ok := available[key]; ok {
+			t.Fatalf("available provider exposed %s", key)
+		}
 	}
 }

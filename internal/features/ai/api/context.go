@@ -24,6 +24,7 @@ type serviceContext struct {
 	ServiceID   string     `json:"serviceId"`
 	Environment string     `json:"environment,omitempty"`
 	Evidence    []evidence `json:"evidence"`
+	Truncated   bool       `json:"truncated,omitempty"`
 }
 
 func buildServiceContext(ctx context.Context, serviceID, environment string) (serviceContext, error) {
@@ -172,10 +173,83 @@ func stringSlice(value interface{}, limit int) []string {
 	return items
 }
 
-func marshalContext(value serviceContext, maxChars int) string {
+func marshalContext(value serviceContext) string {
 	encoded, _ := json.Marshal(value)
-	if len(encoded) > maxChars {
-		encoded = encoded[:maxChars]
-	}
 	return string(encoded)
+}
+
+// limitServiceContext keeps the evidence bundle valid JSON while fitting the
+// provider input budget. Oversized string values are compacted and evidence
+// that still cannot fit is omitted from the exact bundle sent to the model.
+func limitServiceContext(value serviceContext, maxBytes int) serviceContext {
+	if maxBytes < 256 {
+		maxBytes = 256
+	}
+	if encoded, err := json.Marshal(value); err == nil && len(encoded) <= maxBytes {
+		return value
+	}
+
+	limited := serviceContext{
+		ServiceID:   value.ServiceID,
+		Environment: value.Environment,
+		Evidence:    []evidence{},
+		Truncated:   true,
+	}
+	for _, item := range value.Evidence {
+		for _, stringLimit := range []int{4096, 2048, 1024, 512, 256, 128, 64} {
+			candidateItem := item
+			candidateItem.Data = truncateStrings(item.Data, stringLimit)
+			candidate := limited
+			candidate.Evidence = append(append([]evidence{}, limited.Evidence...), candidateItem)
+			encoded, err := json.Marshal(candidate)
+			if err == nil && len(encoded) <= maxBytes {
+				limited = candidate
+				break
+			}
+		}
+	}
+	return limited
+}
+
+func truncateStrings(value interface{}, limit int) interface{} {
+	switch typed := value.(type) {
+	case string:
+		runes := []rune(typed)
+		if len(runes) <= limit {
+			return typed
+		}
+		return string(runes[:limit]) + "…"
+	case bson.M:
+		out := bson.M{}
+		for key, item := range typed {
+			out[key] = truncateStrings(item, limit)
+		}
+		return out
+	case map[string]interface{}:
+		out := map[string]interface{}{}
+		for key, item := range typed {
+			out[key] = truncateStrings(item, limit)
+		}
+		return out
+	case bson.A:
+		out := make(bson.A, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, truncateStrings(item, limit))
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, truncateStrings(item, limit))
+		}
+		return out
+	case []string:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			out = append(out, truncateStrings(item, limit).(string))
+		}
+		return out
+	default:
+		return value
+	}
 }

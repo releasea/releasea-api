@@ -27,7 +27,7 @@ func FindAll(ctx context.Context, col *mongo.Collection, filter bson.M) ([]bson.
 	}
 	defer cursor.Close(ctx)
 
-	var results []bson.M
+	results := make([]bson.M, 0)
 	if err := cursor.All(ctx, &results); err != nil {
 		logDBError("cursor.All", col, err)
 		return nil, err
@@ -44,7 +44,7 @@ func FindAllSorted(ctx context.Context, col *mongo.Collection, filter bson.M, so
 	}
 	defer cursor.Close(ctx)
 
-	var results []bson.M
+	results := make([]bson.M, 0)
 	if err := cursor.All(ctx, &results); err != nil {
 		logDBError("cursor.All", col, err)
 		return nil, err

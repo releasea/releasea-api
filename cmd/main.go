@@ -19,7 +19,7 @@ import (
 )
 
 func loadEnvFiles() {
-	files := []string{".env", ".env.local", ".env.local.cluster"}
+	files := []string{".env", ".env.local", ".env.local.cluster", ".env.local.compose"}
 	merged := map[string]string{}
 	for _, file := range files {
 		values, err := godotenv.Read(file)

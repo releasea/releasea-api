@@ -143,6 +143,7 @@ func registerProtectedRoutes(rg *gin.RouterGroup) {
 func registerAIRoutes(rg *gin.RouterGroup) {
 	admin := platformauth.RequireRoles("admin")
 	rg.GET("/ai/providers", admin, ai.ListProviders)
+	rg.GET("/ai/providers/available", platformauth.RequireRoles("admin", "developer"), ai.ListAvailableProviders)
 	rg.POST("/ai/providers", admin, ai.CreateProvider)
 	rg.PUT("/ai/providers/:id", admin, ai.UpdateProvider)
 	rg.DELETE("/ai/providers/:id", admin, ai.DeleteProvider)

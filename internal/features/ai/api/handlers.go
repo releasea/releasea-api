@@ -34,6 +34,21 @@ func ListProviders(c *gin.Context) {
 	c.JSON(http.StatusOK, items)
 }
 
+func ListAvailableProviders(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
+	defer cancel()
+	items, err := shared.FindAllSorted(ctx, shared.Collection(shared.AIProvidersCollection), bson.M{"enabled": true}, bson.D{{Key: "default", Value: -1}, {Key: "name", Value: 1}})
+	if err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to load available AI providers")
+		return
+	}
+	available := make([]bson.M, 0, len(items))
+	for _, item := range items {
+		available = append(available, availableProviderDocument(item))
+	}
+	c.JSON(http.StatusOK, available)
+}
+
 func CreateProvider(c *gin.Context) { saveProvider(c, "") }
 func UpdateProvider(c *gin.Context) { saveProvider(c, strings.TrimSpace(c.Param("id"))) }
 
@@ -137,6 +152,9 @@ func providerDocument(id string, payload providerPayload, existing bson.M) (bson
 	if maxInput <= 0 {
 		maxInput = 60000
 	}
+	if maxInput < 4000 {
+		maxInput = 4000
+	}
 	if maxInput > 250000 {
 		maxInput = 250000
 	}
@@ -153,6 +171,9 @@ func providerDocument(id string, payload providerPayload, existing bson.M) (bson
 	}
 	if retention > 365 {
 		retention = 365
+	}
+	if payload.DailyTokenLimit < 0 {
+		payload.DailyTokenLimit = 0
 	}
 	now := shared.NowISO()
 	createdAt := shared.StringValue(existing["createdAt"])
@@ -307,7 +328,9 @@ func CreateServiceAnalysis(c *gin.Context) {
 		shared.RespondError(c, http.StatusNotFound, err.Error())
 		return
 	}
-	requestText := fmt.Sprintf("Analysis kind: %s\nUser question: %s\nEvidence bundle:\n%s", payload.Kind, redactSensitive(strings.TrimSpace(payload.Question)), marshalContext(contextData, provider.MaxInputChars))
+	requestPrefix := fmt.Sprintf("Analysis kind: %s\nUser question: %s\nEvidence bundle:\n", payload.Kind, redactSensitive(strings.TrimSpace(payload.Question)))
+	contextData = limitServiceContext(contextData, provider.MaxInputChars-len(requestPrefix))
+	requestText := requestPrefix + marshalContext(contextData)
 	started := time.Now()
 	inference, err := callProvider(ctx, provider, analysisInstructions, requestText)
 	if err != nil {
@@ -333,7 +356,7 @@ func CreateServiceAnalysis(c *gin.Context) {
 	}
 	id := "aia-" + uuid.NewString()
 	actorID, actorName, actorRole := shared.AuditActorFromContext(c)
-	doc := bson.M{"_id": id, "id": id, "serviceId": serviceID, "environment": payload.Environment, "kind": payload.Kind, "question": redactSensitive(payload.Question), "providerId": provider.ID, "providerName": provider.Name, "model": inference.Model, "providerResponseId": inference.ResponseID, "status": "completed", "result": result, "evidence": contextData.Evidence, "usage": inference.Usage, "durationMs": time.Since(started).Milliseconds(), "createdBy": bson.M{"id": actorID, "name": actorName, "role": actorRole}, "createdAt": shared.NowISO(), "expiresAt": time.Now().UTC().AddDate(0, 0, provider.RetentionDays)}
+	doc := bson.M{"_id": id, "id": id, "serviceId": serviceID, "environment": payload.Environment, "kind": payload.Kind, "question": redactSensitive(payload.Question), "providerId": provider.ID, "providerName": provider.Name, "model": inference.Model, "providerResponseId": inference.ResponseID, "status": "completed", "result": result, "evidence": contextData.Evidence, "evidenceTruncated": contextData.Truncated, "usage": inference.Usage, "durationMs": time.Since(started).Milliseconds(), "createdBy": bson.M{"id": actorID, "name": actorName, "role": actorRole}, "createdAt": shared.NowISO(), "expiresAt": time.Now().UTC().AddDate(0, 0, provider.RetentionDays)}
 	if err := shared.InsertOne(ctx, shared.Collection(shared.AIAnalysesCollection), doc); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to store AI analysis")
 		return
@@ -402,6 +425,9 @@ func sanitizeProviderDocument(doc bson.M) {
 	hasAPIKey := strings.TrimSpace(shared.StringValue(doc["apiKey"])) != ""
 	delete(doc, "apiKey")
 	doc["hasApiKey"] = hasAPIKey
+}
+func availableProviderDocument(doc bson.M) bson.M {
+	return whitelist(doc, "id", "name", "type", "model", "default", "health")
 }
 func boolValue(v interface{}, fallback bool) bool {
 	if value, ok := v.(bool); ok {

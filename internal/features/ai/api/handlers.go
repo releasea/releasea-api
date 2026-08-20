@@ -378,7 +378,7 @@ func ListServiceAnalyses(c *gin.Context) {
 		return
 	}
 	defer cursor.Close(ctx)
-	var items []bson.M
+	items := make([]bson.M, 0)
 	if err := cursor.All(ctx, &items); err != nil {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to load AI analysis history")
 		return

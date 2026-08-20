@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	operations "releaseaapi/internal/features/operations/api"
@@ -13,136 +14,64 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
-func collectServiceEnvironments(ctx context.Context, serviceID string, rules []bson.M) []string {
-	envs := make(map[string]struct{})
+func collectServiceEnvironments(ctx context.Context, serviceID string, rules []bson.M) ([]string, error) {
+	deploys, err := shared.FindAll(ctx, shared.Collection(shared.DeploysCollection), bson.M{"serviceId": serviceID})
+	if err != nil {
+		return nil, err
+	}
+	return collectServiceEnvironmentsFromDocuments(rules, deploys), nil
+}
+
+func collectServiceEnvironmentsFromDocuments(rules, deploys []bson.M) []string {
+	namespaces := make(map[string]struct{})
 	for _, rule := range rules {
 		env := strings.TrimSpace(shared.StringValue(rule["environment"]))
 		if env == "" {
 			env = "prod"
 		}
-		envs[env] = struct{}{}
+		namespaces[shared.ResolveAppNamespace(env)] = struct{}{}
 	}
 
-	deploys, err := shared.FindAll(ctx, shared.Collection(shared.DeploysCollection), bson.M{"serviceId": serviceID})
-	if err == nil {
-		for _, deploy := range deploys {
-			env := strings.TrimSpace(shared.StringValue(deploy["environment"]))
-			if env == "" {
-				env = "prod"
-			}
-			envs[env] = struct{}{}
+	for _, deploy := range deploys {
+		env := strings.TrimSpace(shared.StringValue(deploy["environment"]))
+		if env == "" {
+			env = "prod"
 		}
+		namespaces[shared.ResolveAppNamespace(env)] = struct{}{}
 	}
 
-	if len(envs) == 0 {
-		return []string{"prod"}
-	}
-
-	ordered := make([]string, 0, len(envs))
-	for env := range envs {
-		ordered = append(ordered, env)
-	}
-	return ordered
-}
-
-func queueRuleDelete(ctx context.Context, rule bson.M, service bson.M, triggeredBy string) error {
-	ruleID := ruleIDFromDoc(rule)
-	if ruleID == "" {
+	if len(namespaces) == 0 {
 		return nil
 	}
 
-	serviceID := shared.StringValue(rule["serviceId"])
-	if serviceID == "" {
-		serviceID = shared.StringValue(service["id"])
+	ordered := make([]string, 0, len(namespaces))
+	for namespace := range namespaces {
+		ordered = append(ordered, canonicalEnvironmentForNamespace(namespace))
 	}
-	if serviceID == "" {
-		serviceID = shared.StringValue(service["_id"])
-	}
-	if serviceID == "" {
-		return fmt.Errorf("rule %s missing service id", ruleID)
-	}
-
-	environment := strings.TrimSpace(shared.StringValue(rule["environment"]))
-	if environment == "" {
-		environment = "prod"
-	}
-	workerRouting, err := resolveServiceWorkerRouting(ctx, environment, service)
-	if err != nil {
-		return err
-	}
-	if err := ensureActiveWorkerForEnvironmentWithCluster(ctx, environment, workerRouting.WorkerTags, workerRouting.PreferredWorkerCluster); err != nil {
-		return err
-	}
-	serviceName := shared.StringValue(service["name"])
-	if serviceName == "" {
-		serviceName = serviceID
-	}
-	ruleName := shared.StringValue(rule["name"])
-	if ruleName == "" {
-		ruleName = ruleID
-	}
-	policyMap := shared.MapPayload(rule["policy"])
-	action := shared.StringValue(policyMap["action"])
-	if action == "" {
-		action = "allow"
-	}
-
-	now := shared.NowISO()
-	ruleDeployID := "rdeploy-" + uuid.NewString()
-	ruleDeployDoc := bson.M{
-		"_id":         ruleDeployID,
-		"id":          ruleDeployID,
-		"ruleId":      ruleID,
-		"serviceId":   serviceID,
-		"status":      operations.StatusQueued,
-		"environment": environment,
-		"triggeredBy": triggeredBy,
-		"startedAt":   now,
-		"logs":        []interface{}{},
-	}
-	if err := shared.InsertOne(ctx, shared.Collection(shared.RuleDeploysCollection), ruleDeployDoc); err != nil {
-		return fmt.Errorf("failed to queue rule delete")
-	}
-
-	opID := "op-" + uuid.NewString()
-	opDoc := bson.M{
-		"_id":          opID,
-		"id":           opID,
-		"type":         operations.OperationTypeRuleDelete,
-		"resourceType": "rule",
-		"resourceId":   ruleID,
-		"ruleDeployId": ruleDeployID,
-		"status":       operations.StatusQueued,
-		"createdAt":    now,
-		"updatedAt":    now,
-		"payload": bson.M{
-			"environment": environment,
-			"serviceId":   serviceID,
-			"serviceName": serviceName,
-			"ruleName":    ruleName,
-			"action":      action,
-		},
-		"requestedBy": triggeredBy,
-		"serviceName": serviceName,
-	}
-	workerRouting, err = resolveServiceWorkerRouting(ctx, environment, service)
-	if err != nil {
-		return err
-	}
-	applyWorkerRoutingToPayload(shared.MapPayload(opDoc["payload"]), workerRouting)
-	if err := shared.InsertOne(ctx, shared.Collection(shared.OperationsCollection), opDoc); err != nil {
-		return fmt.Errorf("failed to queue rule delete")
-	}
-	_ = shared.UpdateByID(ctx, shared.Collection(shared.RulesCollection), ruleID, bson.M{
-		"status":    operations.StatusQueued,
-		"updatedAt": now,
-	})
-
-	operationqueue.PublishOperationWithDispatchError(ctx, opID)
-	return nil
+	sort.Strings(ordered)
+	return ordered
 }
 
-func queueServiceDelete(ctx context.Context, service bson.M, environment, triggeredBy string) error {
+func canonicalEnvironmentForNamespace(namespace string) string {
+	switch namespace {
+	case shared.NamespaceProduction:
+		return "prod"
+	case shared.NamespaceStaging:
+		return "staging"
+	default:
+		return "dev"
+	}
+}
+
+func serviceDeleteWorkerRouting(service bson.M) workerRoutingResolution {
+	// Cleanup only requires Kubernetes access. Build/GPU/region tags must not
+	// strand destructive, idempotent operations when the original worker is gone.
+	return workerRoutingResolution{
+		PreferredWorkerCluster: strings.TrimSpace(shared.StringValue(service["preferredWorkerCluster"])),
+	}
+}
+
+func queueServiceDelete(ctx context.Context, service bson.M, environment, triggeredBy, deletionRequestID string) error {
 	serviceID := shared.StringValue(service["id"])
 	if serviceID == "" {
 		serviceID = shared.StringValue(service["_id"])
@@ -153,13 +82,7 @@ func queueServiceDelete(ctx context.Context, service bson.M, environment, trigge
 	if environment == "" {
 		environment = "prod"
 	}
-	workerRouting, err := resolveServiceWorkerRouting(ctx, environment, service)
-	if err != nil {
-		return err
-	}
-	if err := ensureActiveWorkerForEnvironmentWithCluster(ctx, environment, workerRouting.WorkerTags, workerRouting.PreferredWorkerCluster); err != nil {
-		return err
-	}
+	workerRouting := serviceDeleteWorkerRouting(service)
 	serviceName := shared.StringValue(service["name"])
 	if serviceName == "" {
 		serviceName = serviceID
@@ -177,7 +100,8 @@ func queueServiceDelete(ctx context.Context, service bson.M, environment, trigge
 		"createdAt":    now,
 		"updatedAt":    now,
 		"payload": bson.M{
-			"environment": environment,
+			"environment":       environment,
+			"deletionRequestId": deletionRequestID,
 		},
 		"requestedBy": triggeredBy,
 		"serviceName": serviceName,

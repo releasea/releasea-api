@@ -1,6 +1,7 @@
 package services
 
 import (
+	"reflect"
 	"testing"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -65,5 +66,30 @@ func TestDeployBlocksServiceDeletion(t *testing.T) {
 				t.Fatalf("deployBlocksServiceDeletion(%v) = %v, want %v", tt.deploy, got, tt.expect)
 			}
 		})
+	}
+}
+
+func TestCollectServiceEnvironmentsDeduplicatesByNamespace(t *testing.T) {
+	rules := []bson.M{
+		{"environment": "homol"},
+		{"environment": "staging"},
+		{"environment": "production"},
+	}
+	deploys := []bson.M{
+		{"environment": "dev"},
+		{"environment": "qa"},
+		{"environment": "prod"},
+	}
+
+	got := collectServiceEnvironmentsFromDocuments(rules, deploys)
+	want := []string{"dev", "prod", "staging"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("environments = %v, want %v", got, want)
+	}
+}
+
+func TestCollectServiceEnvironmentsWithoutRuntimeTargets(t *testing.T) {
+	if got := collectServiceEnvironmentsFromDocuments(nil, nil); len(got) != 0 {
+		t.Fatalf("environments = %v, want no cleanup targets", got)
 	}
 }

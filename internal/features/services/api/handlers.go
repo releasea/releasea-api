@@ -1200,6 +1200,11 @@ func DeleteService(c *gin.Context) {
 			return
 		}
 	}
+	environments, err := collectServiceEnvironments(ctx, serviceID, rules)
+	if err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to load service cleanup targets")
+		return
+	}
 
 	now := shared.NowISO()
 	if err := shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, bson.M{
@@ -1216,16 +1221,36 @@ func DeleteService(c *gin.Context) {
 		triggeredBy = "System"
 	}
 
-	for _, rule := range rules {
-		if err := queueRuleDelete(ctx, rule, service, triggeredBy); err != nil {
-			shared.RespondError(c, http.StatusBadGateway, err.Error())
+	deletionRequestID := "delete-" + uuid.NewString()
+	if len(environments) == 0 && shared.BoolValue(service["repoManaged"]) {
+		// A managed repository is an external cleanup target even when the
+		// service never produced a runtime deployment.
+		environments = []string{"prod"}
+	}
+	if len(environments) == 0 {
+		if err := operations.FinalizeServiceDeletion(ctx, serviceID); err != nil {
+			shared.RespondError(c, http.StatusInternalServerError, "Failed to finalize service deletion")
 			return
 		}
+		actorID, actorName, actorRole := shared.AuditActorFromContext(c)
+		shared.RecordAuditEvent(ctx, shared.AuditEvent{
+			Action:       "service.delete.completed",
+			ResourceType: "service",
+			ResourceID:   serviceID,
+			Status:       "succeeded",
+			ActorID:      actorID,
+			ActorName:    actorName,
+			ActorRole:    actorRole,
+			Metadata: map[string]interface{}{
+				"name":   shared.StringValue(service["name"]),
+				"reason": "no runtime targets",
+			},
+		})
+		c.JSON(http.StatusOK, gin.H{"status": "deleted"})
+		return
 	}
-
-	environments := collectServiceEnvironments(ctx, serviceID, rules)
 	for _, env := range environments {
-		if err := queueServiceDelete(ctx, service, env, triggeredBy); err != nil {
+		if err := queueServiceDelete(ctx, service, env, triggeredBy, deletionRequestID); err != nil {
 			shared.RespondError(c, http.StatusBadGateway, err.Error())
 			return
 		}

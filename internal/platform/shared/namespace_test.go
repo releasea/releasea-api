@@ -65,6 +65,9 @@ func TestResolveAppNamespace(t *testing.T) {
 	if got := ResolveAppNamespace("unknown-env"); got != NamespaceDevelopment {
 		t.Fatalf("unknown environment = %q, want %q", got, NamespaceDevelopment)
 	}
+	if got := ResolveAppNamespace("homol"); got != NamespaceStaging {
+		t.Fatalf("homol environment = %q, want %q", got, NamespaceStaging)
+	}
 }
 
 func TestNamespaceValidationHelpers(t *testing.T) {

@@ -29,6 +29,22 @@ const (
 
 var providerHealthLoader = loadProviderHealthCatalog
 
+type scmHealthRuntime interface {
+	HealthCheck(context.Context, string) error
+}
+
+type registryHealthRuntime interface {
+	HealthCheck(context.Context, map[string]interface{}) error
+}
+
+var resolveSCMHealthRuntime = func(providerID string) (scmHealthRuntime, error) {
+	return scmproviders.ResolveRuntime(providerID)
+}
+
+var resolveRegistryHealthRuntime = func(providerID string) (registryHealthRuntime, error) {
+	return registryproviders.ResolveRuntime(providerID)
+}
+
 func GetProviderHealth(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 25*time.Second)
 	defer cancel()
@@ -113,14 +129,21 @@ func buildSCMHealthChecks(ctx context.Context, category platformmodels.ProviderC
 			continue
 		}
 
-		runtime, err := scmproviders.ResolveRuntime(providerID)
+		runtime, err := resolveSCMHealthRuntime(providerID)
 		if err != nil {
 			check.State = providerHealthUnsupported
 			check.Message = err.Error()
 			checks = append(checks, check)
 			continue
 		}
-		if err := runtime.HealthCheck(ctx, shared.StringValue(document["token"])); err != nil {
+		decrypted, err := shared.DecryptCredentialDocument(document, "token")
+		if err != nil {
+			check.State = providerHealthUnhealthy
+			check.Message = "Credential could not be decrypted"
+			checks = append(checks, check)
+			continue
+		}
+		if err := runtime.HealthCheck(ctx, shared.StringValue(decrypted["token"])); err != nil {
 			check.State = providerHealthUnhealthy
 			check.Message = err.Error()
 		} else {
@@ -146,14 +169,21 @@ func buildRegistryHealthChecks(ctx context.Context, category platformmodels.Prov
 			Implementation: definition.Implementation,
 		}
 
-		runtime, err := registryproviders.ResolveRuntime(providerID)
+		runtime, err := resolveRegistryHealthRuntime(providerID)
 		if err != nil {
 			check.State = providerHealthUnsupported
 			check.Message = err.Error()
 			checks = append(checks, check)
 			continue
 		}
-		if err := runtime.HealthCheck(ctx, map[string]interface{}(document)); err != nil {
+		decrypted, err := shared.DecryptCredentialDocument(document, "password")
+		if err != nil {
+			check.State = providerHealthUnhealthy
+			check.Message = "Credential could not be decrypted"
+			checks = append(checks, check)
+			continue
+		}
+		if err := runtime.HealthCheck(ctx, map[string]interface{}(decrypted)); err != nil {
 			check.State = providerHealthUnhealthy
 			check.Message = err.Error()
 		} else {

@@ -212,6 +212,10 @@ func CreateService(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Docker image required for Docker source")
 		return
 	}
+	if isServiceTemplateSourceRepository(payload) {
+		shared.RespondError(c, http.StatusBadRequest, "The catalog template repository cannot be used as the application repository")
+		return
+	}
 	if _, ok := payload["deployTemplateId"]; !ok {
 		payload["deployTemplateId"] = resolveDeployTemplateID(payload)
 	}
@@ -309,6 +313,20 @@ func UpdateService(c *gin.Context) {
 	normalizeServiceAutoDeployEnvironmentPayload(payload)
 	normalizeServiceWorkerTagsPayload(payload)
 	normalizeServiceWorkerRoutingPreferencesPayload(payload)
+	repositoryCandidate := bson.M{
+		"repoUrl":        existing["repoUrl"],
+		"templateSource": existing["templateSource"],
+	}
+	if value, ok := payload["repoUrl"]; ok {
+		repositoryCandidate["repoUrl"] = value
+	}
+	if value, ok := payload["templateSource"]; ok {
+		repositoryCandidate["templateSource"] = value
+	}
+	if isServiceTemplateSourceRepository(repositoryCandidate) {
+		shared.RespondError(c, http.StatusBadRequest, "The catalog template repository cannot be used as the application repository")
+		return
+	}
 	if _, ok := payload["deployTemplateId"]; !ok {
 		if _, hasSource := payload["sourceType"]; hasSource {
 			payload["deployTemplateId"] = resolveDeployTemplateID(payload)
@@ -326,6 +344,14 @@ func UpdateService(c *gin.Context) {
 		strategyPayloadProvided = nextStrategy.Type != ""
 	}
 	strategyChanged := strategyPayloadProvided && previousStrategy != nextStrategy
+	previousActive := true
+	if raw, ok := existing["isActive"]; ok {
+		previousActive = shared.BoolValue(raw)
+	}
+	availabilityChanged := false
+	if raw, ok := payload["isActive"]; ok {
+		availabilityChanged = shared.BoolValue(raw) != previousActive
+	}
 
 	// If repo URL changes or sourceType switches away from git, drop managed repo flag.
 	if nextRepoURL, ok := payload["repoUrl"]; ok {
@@ -380,12 +406,12 @@ func UpdateService(c *gin.Context) {
 	}
 
 	// Queue immediate scale when replicas or instance type change.
-	if replicasOrInstanceChanged(existing, payload) {
+	if replicasOrInstanceChanged(existing, payload) || availabilityChanged {
 		env := scaleEnv
 		if env == "" {
 			env = "prod"
 		}
-		queueImmediateScale(ctx, c, updated, env)
+		queueImmediateScale(ctx, c, updated, env, previousActive)
 	}
 
 	if scheduleChanged && isCronJobService(updated) {
@@ -563,14 +589,21 @@ func replicasOrInstanceChanged(existing bson.M, payload bson.M) bool {
 	return false
 }
 
-func queueImmediateScale(ctx context.Context, c *gin.Context, service bson.M, environment string) {
+func queueImmediateScale(ctx context.Context, c *gin.Context, service bson.M, environment string, previousActive bool) {
 	serviceID := shared.StringValue(service["id"])
-	replicas := shared.IntValue(service["replicas"])
-	if replicas <= 0 {
-		replicas = shared.IntValue(service["minReplicas"])
+	active := true
+	if raw, ok := service["isActive"]; ok {
+		active = shared.BoolValue(raw)
 	}
-	if replicas <= 0 {
-		replicas = 1
+	replicas := 0
+	if active {
+		replicas = shared.IntValue(service["replicas"])
+		if replicas <= 0 {
+			replicas = shared.IntValue(service["minReplicas"])
+		}
+		if replicas <= 0 {
+			replicas = 1
+		}
 	}
 	now := shared.NowISO()
 	requestedBy := shared.AuthDisplayName(c)
@@ -578,18 +611,20 @@ func queueImmediateScale(ctx context.Context, c *gin.Context, service bson.M, en
 	opDoc := bson.M{
 		"_id":          operationID,
 		"id":           operationID,
-		"type":         "service.scale",
+		"type":         operations.OperationTypeServiceScale,
 		"resourceType": "service",
 		"resourceId":   serviceID,
 		"status":       operations.StatusQueued,
 		"createdAt":    now,
 		"updatedAt":    now,
 		"payload": bson.M{
-			"environment": environment,
-			"replicas":    replicas,
-			"action":      "scale",
-			"cpu":         shared.IntValue(service["cpu"]),
-			"memory":      shared.IntValue(service["memory"]),
+			"environment":    environment,
+			"replicas":       replicas,
+			"active":         active,
+			"previousActive": previousActive,
+			"action":         "scale",
+			"cpu":            shared.IntValue(service["cpu"]),
+			"memory":         shared.IntValue(service["memory"]),
 		},
 		"requestedBy": requestedBy,
 		"serviceName": shared.StringValue(service["name"]),
@@ -1108,6 +1143,7 @@ func queueServiceDeployOperation(ctx context.Context, service bson.M, environmen
 	deployDoc := bson.M{
 		"_id":            deployID,
 		"id":             deployID,
+		"activeKey":      operations.DeployActiveKey(serviceID, environment),
 		"serviceId":      serviceID,
 		"status":         operations.DeployStatusRequested,
 		"environment":    environment,
@@ -1143,6 +1179,7 @@ func queueServiceDeployOperation(ctx context.Context, service bson.M, environmen
 	}
 	applyWorkerRoutingToPayload(shared.MapPayload(opDoc["payload"]), workerRouting)
 	if err := shared.InsertOne(ctx, shared.Collection(shared.OperationsCollection), opDoc); err != nil {
+		_ = shared.DeleteByID(ctx, shared.Collection(shared.DeploysCollection), deployID)
 		return err
 	}
 
@@ -1173,8 +1210,11 @@ func DeleteService(c *gin.Context) {
 
 	activeDeploys, err := shared.FindAll(ctx, shared.Collection(shared.DeploysCollection), bson.M{
 		"serviceId": serviceID,
-		"status": bson.M{
-			"$in": operations.DeployNonTerminalStatuses(),
+		"$or": []bson.M{
+			{"status": bson.M{"$in": operations.DeployNonTerminalStatuses()}},
+			// Legacy workers used rollback for both the active compensation phase
+			// and its terminal result. Only unfinished legacy records are active.
+			{"status": "rollback", "finishedAt": bson.M{"$in": []interface{}{nil, ""}}},
 		},
 	})
 	if err != nil {
@@ -1289,7 +1329,7 @@ func deployBlocksServiceDeletion(deploy bson.M) bool {
 	if status == "" {
 		return false
 	}
-	if status != operations.DeployStatusRollback {
+	if status != operations.DeployStatusRolledBack {
 		return true
 	}
 	return strings.TrimSpace(shared.StringValue(deploy["finishedAt"])) == ""
@@ -1760,24 +1800,40 @@ func GetServicePods(c *gin.Context) {
 		return
 	}
 
-	// Extract unique pod names
-	podSet := make(map[string]struct{})
-	for _, log := range logs {
-		if podName, ok := log.Metadata["replicaName"].(string); ok && podName != "" {
-			podSet[podName] = struct{}{}
-		}
-	}
-
-	pods := make([]string, 0, len(podSet))
-	for pod := range podSet {
-		pods = append(pods, pod)
-	}
+	// Prefer the instance with the most recent log activity. Loki can retain
+	// streams from terminated replicas inside the selected time window.
+	pods := podNamesByLatestLog(logs)
 
 	c.JSON(http.StatusOK, gin.H{
 		"pods":        pods,
 		"namespace":   namespace,
 		"serviceName": serviceName,
 	})
+}
+
+func podNamesByLatestLog(logs []observability.LogPayload) []string {
+	latestByPod := make(map[string]string)
+	for _, entry := range logs {
+		podName, ok := entry.Metadata["replicaName"].(string)
+		if !ok || strings.TrimSpace(podName) == "" {
+			continue
+		}
+		if entry.Timestamp > latestByPod[podName] {
+			latestByPod[podName] = entry.Timestamp
+		}
+	}
+
+	pods := make([]string, 0, len(latestByPod))
+	for pod := range latestByPod {
+		pods = append(pods, pod)
+	}
+	sort.Slice(pods, func(i, j int) bool {
+		if latestByPod[pods[i]] == latestByPod[pods[j]] {
+			return pods[i] < pods[j]
+		}
+		return latestByPod[pods[i]] > latestByPod[pods[j]]
+	})
+	return pods
 }
 
 func GetServiceBuilds(c *gin.Context) {

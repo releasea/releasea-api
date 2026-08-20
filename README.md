@@ -61,7 +61,7 @@ Common targets:
 |---|---|---|
 | `JWT_SECRET` | Access token signing secret | `change-me` |
 | `CREDENTIAL_ENCRYPTION_KEY` | Base64-encoded 32-byte AES key used to encrypt stored SCM, registry, and OIDC secrets | _(required for secret writes)_ |
-| `IDEMPOTENCY_BACKEND` | Idempotency storage; use `mongo` when the API has multiple replicas | `memory` |
+| `IDEMPOTENCY_BACKEND` | Idempotency storage; `mongo` is durable across restarts and API replicas | `mongo` |
 | `JWT_TTL_MINUTES` | Access token TTL (minutes) | `720` |
 | `JWT_REFRESH_SECRET` | Refresh token signing secret (falls back to `JWT_SECRET` when empty) | _(empty)_ |
 | `JWT_REFRESH_TTL_HOURS` | Refresh token TTL (hours) | `720` |

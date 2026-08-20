@@ -879,6 +879,7 @@ func persistDeployRecord(
 	deployDoc := bson.M{
 		"_id":            deployID,
 		"id":             deployID,
+		"activeKey":      operations.DeployActiveKey(request.ServiceID, request.Environment),
 		"serviceId":      request.ServiceID,
 		"status":         operations.DeployStatusRequested,
 		"environment":    request.Environment,

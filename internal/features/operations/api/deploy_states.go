@@ -15,9 +15,14 @@ const (
 	DeployStatusProgressing = "progressing"
 	DeployStatusPromoting   = "promoting"
 	DeployStatusCompleted   = "completed"
-	DeployStatusRollback    = "rollback"
-	DeployStatusFailed      = "failed"
-	DeployStatusRetrying    = "retrying"
+	DeployStatusRollingBack = "rolling-back"
+	DeployStatusRolledBack  = "rolled-back"
+	// DeployStatusRollback remains as a source-compatible alias for the
+	// terminal outcome. New workers publish rolling-back while compensation is
+	// running and rolled-back only after the previous version is restored.
+	DeployStatusRollback = DeployStatusRolledBack
+	DeployStatusFailed   = "failed"
+	DeployStatusRetrying = "retrying"
 )
 
 var deployQueueBlockingStatuses = []string{
@@ -25,7 +30,11 @@ var deployQueueBlockingStatuses = []string{
 	DeployStatusScheduled,
 	DeployStatusPreparing,
 	DeployStatusDeploying,
+	DeployStatusValidating,
+	DeployStatusProgressing,
+	DeployStatusPromoting,
 	DeployStatusRetrying,
+	DeployStatusRollingBack,
 	StatusQueued,
 	StatusInProgress,
 }
@@ -44,7 +53,7 @@ var deployNonTerminalStatuses = []string{
 	DeployStatusProgressing,
 	DeployStatusPromoting,
 	DeployStatusRetrying,
-	DeployStatusRollback,
+	DeployStatusRollingBack,
 	StatusQueued,
 	StatusInProgress,
 }
@@ -58,7 +67,8 @@ var deployKnownStatuses = map[string]struct{}{
 	DeployStatusProgressing: {},
 	DeployStatusPromoting:   {},
 	DeployStatusCompleted:   {},
-	DeployStatusRollback:    {},
+	DeployStatusRollingBack: {},
+	DeployStatusRolledBack:  {},
 	DeployStatusFailed:      {},
 	DeployStatusRetrying:    {},
 }
@@ -75,11 +85,20 @@ func DeployNonTerminalStatuses() []string {
 	return append([]string(nil), deployNonTerminalStatuses...)
 }
 
+// DeployActiveKey identifies the single deploy allowed to be active for a
+// service/environment pair. The field is removed when the deploy reaches a
+// terminal state, allowing the next request to acquire the same key.
+func DeployActiveKey(serviceID, environment string) string {
+	return strings.TrimSpace(serviceID) + "|" + strings.ToLower(strings.TrimSpace(environment))
+}
+
 func NormalizeDeployStatus(status string) string {
 	normalized := strings.ToLower(strings.TrimSpace(status))
 	switch normalized {
 	case "success":
 		return DeployStatusCompleted
+	case "rollback":
+		return DeployStatusRolledBack
 	case StatusQueued:
 		return DeployStatusScheduled
 	case StatusInProgress:
@@ -158,28 +177,40 @@ func CanTransitionDeployStatus(current, next string) bool {
 		return true
 	}
 
-	switch from {
-	case DeployStatusRequested:
-		return to == DeployStatusScheduled || to == DeployStatusFailed
-	case DeployStatusScheduled:
-		return to == DeployStatusPreparing || to == DeployStatusRetrying || to == DeployStatusFailed || to == DeployStatusRollback
-	case DeployStatusPreparing:
-		return to == DeployStatusDeploying || to == DeployStatusRetrying || to == DeployStatusRollback || to == DeployStatusFailed
-	case DeployStatusDeploying:
-		return to == DeployStatusValidating || to == DeployStatusRetrying || to == DeployStatusRollback || to == DeployStatusFailed
-	case DeployStatusValidating:
-		return to == DeployStatusProgressing || to == DeployStatusPromoting || to == DeployStatusCompleted || to == DeployStatusRetrying || to == DeployStatusRollback || to == DeployStatusFailed
-	case DeployStatusProgressing:
-		return to == DeployStatusPromoting || to == DeployStatusRetrying || to == DeployStatusRollback || to == DeployStatusFailed
-	case DeployStatusPromoting:
-		return to == DeployStatusCompleted || to == DeployStatusRetrying || to == DeployStatusRollback || to == DeployStatusFailed
-	case DeployStatusRetrying:
-		return to == DeployStatusPreparing || to == DeployStatusDeploying || to == DeployStatusValidating || to == DeployStatusRollback || to == DeployStatusFailed
-	case DeployStatusRollback:
-		return to == DeployStatusFailed || to == DeployStatusCompleted
-	case DeployStatusCompleted, DeployStatusFailed:
-		return false
-	default:
+	if from == DeployStatusCompleted || from == DeployStatusRolledBack || from == DeployStatusFailed {
 		return false
 	}
+	if from == DeployStatusRollingBack {
+		return to == DeployStatusRolledBack || to == DeployStatusFailed
+	}
+	if to == DeployStatusFailed || to == DeployStatusRollingBack {
+		return true
+	}
+	if to == DeployStatusRetrying {
+		return from != DeployStatusRequested && from != DeployStatusRetrying
+	}
+
+	// Status delivery is monotonic but may skip phases after a transient HTTP
+	// failure. Accepting forward progress keeps a delayed earlier message from
+	// regressing state while allowing the next observed phase to recover it.
+	toRank, toKnown := deployProgressRank[to]
+	if !toKnown {
+		return false
+	}
+	if from == DeployStatusRetrying {
+		return toRank >= deployProgressRank[DeployStatusPreparing]
+	}
+	fromRank, fromKnown := deployProgressRank[from]
+	return fromKnown && toRank > fromRank
+}
+
+var deployProgressRank = map[string]int{
+	DeployStatusRequested:   0,
+	DeployStatusScheduled:   1,
+	DeployStatusPreparing:   2,
+	DeployStatusDeploying:   3,
+	DeployStatusValidating:  4,
+	DeployStatusProgressing: 5,
+	DeployStatusPromoting:   6,
+	DeployStatusCompleted:   7,
 }

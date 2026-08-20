@@ -74,6 +74,34 @@ func validateGitOpsRepositoryURL(provider string, repoURL string) error {
 	}
 }
 
+func isServiceTemplateSourceRepository(service bson.M) bool {
+	repoURL := strings.TrimSpace(shared.StringValue(service["repoUrl"]))
+	parsedRepo, ok := gh.ParseRepo(repoURL)
+	if !ok {
+		return false
+	}
+
+	templateOwner := "releasea"
+	templateRepo := "templates"
+	if source, ok := service["templateSource"].(bson.M); ok {
+		if owner := strings.TrimSpace(shared.StringValue(source["owner"])); owner != "" {
+			templateOwner = owner
+		}
+		if repo := strings.TrimSpace(shared.StringValue(source["repo"])); repo != "" {
+			templateRepo = repo
+		}
+	} else if source, ok := service["templateSource"].(map[string]interface{}); ok {
+		if owner := strings.TrimSpace(shared.StringValue(source["owner"])); owner != "" {
+			templateOwner = owner
+		}
+		if repo := strings.TrimSpace(shared.StringValue(source["repo"])); repo != "" {
+			templateRepo = repo
+		}
+	}
+
+	return strings.EqualFold(parsedRepo.Owner, templateOwner) && strings.EqualFold(parsedRepo.Name, templateRepo)
+}
+
 func summarizeGitOpsRepositoryPolicyCheck(check serviceGitOpsRepositoryPolicyCheck) serviceGitOpsRepositoryPolicyCheck {
 	invalidCount := 0
 	reviewCount := 0
@@ -134,6 +162,15 @@ func buildServiceGitOpsRepositoryPolicyCheck(
 			Label:   "Repository URL",
 			State:   "invalid",
 			Message: "Configure a repository URL before using GitOps pull request delivery.",
+		})
+		return summarizeGitOpsRepositoryPolicyCheck(check), nil
+	}
+	if isServiceTemplateSourceRepository(service) {
+		check.Checks = append(check.Checks, serviceGitOpsRepositoryPolicyCheckItem{
+			ID:      "application-repository",
+			Label:   "Application repository",
+			State:   "invalid",
+			Message: "The configured URL is the catalog template source, not this service's application repository. Configure the generated application repository before using GitOps delivery.",
 		})
 		return summarizeGitOpsRepositoryPolicyCheck(check), nil
 	}

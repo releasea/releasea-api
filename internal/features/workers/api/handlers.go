@@ -86,6 +86,20 @@ func UpdateWorker(c *gin.Context) {
 		return
 	}
 	updated, _ := shared.FindOne(ctx, shared.Collection(shared.WorkersCollection), bson.M{"_id": workerID})
+	actorID, actorName, actorRole := shared.AuditActorFromContext(c)
+	shared.RecordAuditEvent(ctx, shared.AuditEvent{
+		Action:       "worker.configuration.updated",
+		ResourceType: "worker",
+		ResourceID:   workerID,
+		ActorID:      actorID,
+		ActorName:    actorName,
+		ActorRole:    actorRole,
+		Message:      "Worker configuration updated",
+		Metadata: map[string]interface{}{
+			"name": shared.StringValue(updated["name"]),
+			"tags": shared.ToStringSlice(updated["tags"]),
+		},
+	})
 	c.JSON(http.StatusOK, updated)
 }
 
@@ -120,6 +134,20 @@ func DeleteWorker(c *gin.Context) {
 			return
 		}
 	}
+	actorID, actorName, actorRole := shared.AuditActorFromContext(c)
+	shared.RecordAuditEvent(ctx, shared.AuditEvent{
+		Action:       "worker.deleted",
+		ResourceType: "worker",
+		ResourceID:   workerID,
+		ActorID:      actorID,
+		ActorName:    actorName,
+		ActorRole:    actorRole,
+		Message:      "Worker and linked registrations deleted",
+		Metadata: map[string]interface{}{
+			"name":          shared.StringValue(worker["name"]),
+			"credentialIds": credentialIDs,
+		},
+	})
 	c.Status(http.StatusNoContent)
 }
 
@@ -194,6 +222,21 @@ func RestartWorker(c *gin.Context) {
 		shared.RespondError(c, http.StatusServiceUnavailable, "Worker queue unavailable")
 		return
 	}
+	actorID, actorName, actorRole := shared.AuditActorFromContext(c)
+	shared.RecordAuditEvent(ctx, shared.AuditEvent{
+		Action:       "worker.restart.requested",
+		ResourceType: "worker",
+		ResourceID:   workerID,
+		ActorID:      actorID,
+		ActorName:    actorName,
+		ActorRole:    actorRole,
+		Message:      "Worker restart requested",
+		Metadata: map[string]interface{}{
+			"operationId":         opID,
+			"deploymentName":      deploymentName,
+			"deploymentNamespace": deploymentNamespace,
+		},
+	})
 
 	c.JSON(http.StatusAccepted, gin.H{"operation": opDoc})
 }
@@ -338,6 +381,21 @@ func CreateWorkerRegistration(c *gin.Context) {
 	delete(payload, "expiresAt")
 	payload["token"] = tokenValue
 	payload["tokenHint"] = tokenHintValue
+	actorID, actorName, actorRole := shared.AuditActorFromContext(c)
+	shared.RecordAuditEvent(ctx, shared.AuditEvent{
+		Action:       "worker.registration.created",
+		ResourceType: "worker_registration",
+		ResourceID:   shared.StringValue(payload["id"]),
+		ActorID:      actorID,
+		ActorName:    actorName,
+		ActorRole:    actorRole,
+		Message:      "Worker registration created",
+		Metadata: map[string]interface{}{
+			"name":        shared.StringValue(payload["name"]),
+			"environment": shared.StringValue(payload["environment"]),
+			"cluster":     shared.StringValue(payload["cluster"]),
+		},
+	})
 	c.JSON(http.StatusOK, payload)
 }
 
@@ -374,6 +432,16 @@ func DeleteWorkerRegistration(c *gin.Context) {
 			{"credentialId": registrationID},
 			{"credentialIds": registrationID},
 		},
+	})
+	actorID, actorName, actorRole := shared.AuditActorFromContext(c)
+	shared.RecordAuditEvent(ctx, shared.AuditEvent{
+		Action:       "worker.registration.deleted",
+		ResourceType: "worker_registration",
+		ResourceID:   registrationID,
+		ActorID:      actorID,
+		ActorName:    actorName,
+		ActorRole:    actorRole,
+		Message:      "Worker registration deleted",
 	})
 	c.Status(http.StatusNoContent)
 }

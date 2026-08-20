@@ -18,8 +18,7 @@ import (
 	"github.com/joho/godotenv"
 )
 
-func loadEnvFiles() {
-	files := []string{".env", ".env.local", ".env.local.cluster", ".env.local.compose"}
+func readEnvFiles(files []string) map[string]string {
 	merged := map[string]string{}
 	for _, file := range files {
 		values, err := godotenv.Read(file)
@@ -30,6 +29,14 @@ func loadEnvFiles() {
 			merged[key] = value
 		}
 	}
+	return merged
+}
+
+func loadEnvFiles() {
+	// Local cluster settings are the most specific development profile and must
+	// take precedence over the Docker Compose defaults when both files exist.
+	files := []string{".env", ".env.local", ".env.local.compose", ".env.local.cluster"}
+	merged := readEnvFiles(files)
 	for key, value := range merged {
 		if _, exists := os.LookupEnv(key); exists {
 			continue

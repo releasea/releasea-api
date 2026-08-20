@@ -102,8 +102,21 @@ func RecoverStaleOperationClaims(c *gin.Context) {
 
 		if mutation.Status == StatusQueued {
 			recovered++
+			if shared.StringValue(op["type"]) == OperationTypeServiceDeploy {
+				deployID := shared.StringValue(op["deployId"])
+				if deployID != "" {
+					_ = shared.UpdateByID(ctx, shared.Collection(shared.DeploysCollection), deployID, bson.M{
+						"status":                   DeployStatusRetrying,
+						"strategyStatus.phase":     DeployStatusRetrying,
+						"strategyStatus.summary":   "Worker lease expired. Deployment requeued",
+						"strategyStatus.updatedAt": nowISO,
+						"updatedAt":                nowISO,
+					})
+				}
+			}
 		} else if mutation.Status == StatusFailed {
 			failed++
+			_ = applyOperationFailure(ctx, op, nowISO)
 			notifyOperationResult(ctx, op, StatusFailed, mutation.Message)
 		}
 
@@ -162,8 +175,9 @@ func buildStaleClaimRecoveryMutation(op bson.M, recoveredBy string, now time.Tim
 		"recovery.lastWorkerRegistrationId": workerRegistrationID,
 	}
 	unsetDoc := bson.M{
-		"startedAt":  "",
-		"finishedAt": "",
+		"startedAt":    "",
+		"finishedAt":   "",
+		"finalization": "",
 	}
 
 	if recoveryCount >= defaultStaleClaimRecoveryLimit {

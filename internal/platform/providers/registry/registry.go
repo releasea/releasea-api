@@ -141,7 +141,9 @@ func (r basicRegistryRuntime) HealthCheck(ctx context.Context, credential map[st
 		return fmt.Errorf("%s registry credentials missing username or password", strings.ToUpper(r.id))
 	}
 
-	endpoint, err := resolveEndpoint(strings.TrimSpace(stringValue(credential, "registryUrl")), r.defaultURL)
+	healthCheckURL := strings.TrimSpace(stringValue(credential, "healthCheckUrl"))
+	registryURL := strings.TrimSpace(stringValue(credential, "registryUrl"))
+	endpoint, err := resolveEndpoint(firstNonEmpty(healthCheckURL, registryURL), r.defaultURL)
 	if err != nil {
 		return err
 	}
@@ -166,6 +168,15 @@ func (r basicRegistryRuntime) HealthCheck(ctx context.Context, credential map[st
 	default:
 		return fmt.Errorf("registry endpoint returned status %d", resp.StatusCode)
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func resolveEndpoint(raw, fallback string) (string, error) {

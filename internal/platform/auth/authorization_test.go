@@ -35,3 +35,15 @@ func TestRequireRoles(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkerJWTAllowedForOperationalLogEndpoints(t *testing.T) {
+	for _, path := range []string{
+		"/api/v1/deploys/deploy-1/logs",
+		"/api/v1/rules/rule-1/logs",
+		"/api/v1/rule-deploys/rule-deploy-1/logs",
+	} {
+		if !workerJWTAllowed(http.MethodPost, path) {
+			t.Fatalf("worker JWT should be allowed to append logs at %s", path)
+		}
+	}
+}

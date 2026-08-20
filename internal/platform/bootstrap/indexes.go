@@ -40,12 +40,13 @@ func EnsureIndexes(ctx context.Context) error {
 		}},
 		{shared.DeploysCollection, []mongo.IndexModel{
 			{Keys: bson.D{{Key: "id", Value: 1}}, Options: options.Index().SetUnique(true).SetName("deploys_id_unique")},
+			{Keys: bson.D{{Key: "activeKey", Value: 1}}, Options: options.Index().SetUnique(true).SetSparse(true).SetName("deploys_active_key_unique")},
 			{Keys: bson.D{{Key: "serviceId", Value: 1}, {Key: "startedAt", Value: -1}}, Options: options.Index().SetName("deploys_service_started")},
 		}},
 		{shared.OperationsCollection, []mongo.IndexModel{
 			{Keys: bson.D{{Key: "id", Value: 1}}, Options: options.Index().SetUnique(true).SetName("operations_id_unique")},
 			{Keys: bson.D{{Key: "status", Value: 1}, {Key: "createdAt", Value: 1}}, Options: options.Index().SetName("operations_status_created")},
-			{Keys: bson.D{{Key: "claim.expiresAt", Value: 1}}, Options: options.Index().SetName("operations_claim_expiry")},
+			{Keys: bson.D{{Key: "claim.leaseExpiresAt", Value: 1}}, Options: options.Index().SetName("operations_claim_lease_expiry")},
 		}},
 		{shared.WorkersCollection, []mongo.IndexModel{
 			{Keys: bson.D{{Key: "id", Value: 1}}, Options: options.Index().SetUnique(true).SetName("workers_id_unique")},

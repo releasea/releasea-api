@@ -133,6 +133,12 @@ func applyOperationSuccess(ctx context.Context, op bson.M, now string) error {
 		if ruleID != "" {
 			_ = shared.DeleteByID(ctx, shared.Collection(shared.RulesCollection), ruleID)
 		}
+		payload := shared.MapPayload(op["payload"])
+		serviceID := strings.TrimSpace(shared.StringValue(payload["serviceId"]))
+		deletionRequestID := strings.TrimSpace(shared.StringValue(payload["deletionRequestId"]))
+		if serviceID != "" && deletionRequestID != "" {
+			return finalizeServiceDeletionRequestIfComplete(ctx, serviceID, deletionRequestID)
+		}
 		return nil
 	case OperationTypeServicePromoteCanary:
 		serviceID := shared.StringValue(op["resourceId"])
@@ -155,27 +161,53 @@ func applyOperationSuccess(ctx context.Context, op bson.M, now string) error {
 		if serviceID == "" {
 			return nil
 		}
-		pending, err := shared.Collection(shared.OperationsCollection).CountDocuments(ctx, bson.M{
+		payload := shared.MapPayload(op["payload"])
+		deletionRequestID := strings.TrimSpace(shared.StringValue(payload["deletionRequestId"]))
+		if deletionRequestID != "" {
+			return finalizeServiceDeletionRequestIfComplete(ctx, serviceID, deletionRequestID)
+		}
+		filter := bson.M{
 			"type":       OperationTypeServiceDelete,
 			"resourceId": serviceID,
-			"status": bson.M{
-				"$in": []string{StatusQueued, StatusInProgress},
-			},
-		})
+			"status":     bson.M{"$in": []string{StatusQueued, StatusInProgress}},
+		}
+		pending, err := shared.Collection(shared.OperationsCollection).CountDocuments(ctx, filter)
 		if err != nil {
 			return err
 		}
 		if pending > 0 {
 			return nil
 		}
-		_, _ = shared.Collection(shared.RuleDeploysCollection).DeleteMany(ctx, bson.M{"serviceId": serviceID})
-		_, _ = shared.Collection(shared.DeploysCollection).DeleteMany(ctx, bson.M{"serviceId": serviceID})
-		_, _ = shared.Collection(shared.LogsCollection).DeleteMany(ctx, bson.M{"serviceId": serviceID})
-		_, _ = shared.Collection(shared.RulesCollection).DeleteMany(ctx, bson.M{"serviceId": serviceID})
-		_, _ = shared.Collection(shared.ExternalEndpointsCollection).DeleteMany(ctx, bson.M{"serviceId": serviceID})
-		return shared.DeleteByID(ctx, shared.Collection(shared.ServicesCollection), serviceID)
+		return FinalizeServiceDeletion(ctx, serviceID)
 	}
 	return nil
+}
+
+func finalizeServiceDeletionRequestIfComplete(ctx context.Context, serviceID, deletionRequestID string) error {
+	pending, err := shared.Collection(shared.OperationsCollection).CountDocuments(ctx, bson.M{
+		"$or": []bson.M{
+			{"type": OperationTypeServiceDelete, "resourceId": serviceID},
+			{"type": OperationTypeRuleDelete, "payload.serviceId": serviceID},
+		},
+		"payload.deletionRequestId": deletionRequestID,
+		"status":                    bson.M{"$ne": StatusSucceeded},
+	})
+	if err != nil {
+		return err
+	}
+	if pending > 0 {
+		return nil
+	}
+	return FinalizeServiceDeletion(ctx, serviceID)
+}
+
+func FinalizeServiceDeletion(ctx context.Context, serviceID string) error {
+	_, _ = shared.Collection(shared.RuleDeploysCollection).DeleteMany(ctx, bson.M{"serviceId": serviceID})
+	_, _ = shared.Collection(shared.DeploysCollection).DeleteMany(ctx, bson.M{"serviceId": serviceID})
+	_, _ = shared.Collection(shared.LogsCollection).DeleteMany(ctx, bson.M{"serviceId": serviceID})
+	_, _ = shared.Collection(shared.RulesCollection).DeleteMany(ctx, bson.M{"serviceId": serviceID})
+	_, _ = shared.Collection(shared.ExternalEndpointsCollection).DeleteMany(ctx, bson.M{"serviceId": serviceID})
+	return shared.DeleteByID(ctx, shared.Collection(shared.ServicesCollection), serviceID)
 }
 
 func ensureDefaultRule(ctx context.Context, serviceID, environment, now string) error {

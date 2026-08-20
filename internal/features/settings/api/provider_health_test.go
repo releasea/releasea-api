@@ -8,9 +8,29 @@ import (
 	"testing"
 
 	platformmodels "releaseaapi/internal/platform/models"
+	"releaseaapi/internal/platform/shared"
 
 	"github.com/gin-gonic/gin"
+	"go.mongodb.org/mongo-driver/bson"
 )
+
+type scmHealthRuntimeStub struct {
+	token string
+}
+
+func (runtime *scmHealthRuntimeStub) HealthCheck(_ context.Context, token string) error {
+	runtime.token = token
+	return nil
+}
+
+type registryHealthRuntimeStub struct {
+	password string
+}
+
+func (runtime *registryHealthRuntimeStub) HealthCheck(_ context.Context, credential map[string]interface{}) error {
+	runtime.password = shared.StringValue(credential["password"])
+	return nil
+}
 
 func TestGetProviderHealthReturnsJSON(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -66,5 +86,50 @@ func TestGetProviderHealthReturnsJSON(t *testing.T) {
 	}
 	if body.SCM.Checks[0].State != providerHealthHealthy {
 		t.Fatalf("scm check state = %q, want %q", body.SCM.Checks[0].State, providerHealthHealthy)
+	}
+}
+
+func TestProviderHealthDecryptsStoredCredentials(t *testing.T) {
+	t.Setenv("CREDENTIAL_ENCRYPTION_KEY", "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+
+	encryptedToken, err := shared.EncryptSensitiveValue("github-token")
+	if err != nil {
+		t.Fatalf("encrypt token: %v", err)
+	}
+	encryptedPassword, err := shared.EncryptSensitiveValue("registry-password")
+	if err != nil {
+		t.Fatalf("encrypt password: %v", err)
+	}
+
+	scmRuntime := &scmHealthRuntimeStub{}
+	registryRuntime := &registryHealthRuntimeStub{}
+	previousSCMResolver := resolveSCMHealthRuntime
+	previousRegistryResolver := resolveRegistryHealthRuntime
+	resolveSCMHealthRuntime = func(string) (scmHealthRuntime, error) { return scmRuntime, nil }
+	resolveRegistryHealthRuntime = func(string) (registryHealthRuntime, error) { return registryRuntime, nil }
+	t.Cleanup(func() {
+		resolveSCMHealthRuntime = previousSCMResolver
+		resolveRegistryHealthRuntime = previousRegistryResolver
+	})
+
+	catalog := buildProviderCatalog()
+	scmChecks := buildSCMHealthChecks(context.Background(), catalog.SCM, []bson.M{{
+		"id": "scm-1", "name": "GitHub", "provider": "github", "authType": "token", "token": encryptedToken,
+	}})
+	registryChecks := buildRegistryHealthChecks(context.Background(), catalog.Registry, []bson.M{{
+		"id": "registry-1", "name": "Registry", "provider": "docker", "password": encryptedPassword,
+	}})
+
+	if len(scmChecks) != 1 || scmChecks[0].State != providerHealthHealthy {
+		t.Fatalf("unexpected SCM health checks: %#v", scmChecks)
+	}
+	if len(registryChecks) != 1 || registryChecks[0].State != providerHealthHealthy {
+		t.Fatalf("unexpected registry health checks: %#v", registryChecks)
+	}
+	if scmRuntime.token != "github-token" {
+		t.Fatalf("SCM runtime received %q", scmRuntime.token)
+	}
+	if registryRuntime.password != "registry-password" {
+		t.Fatalf("registry runtime received %q", registryRuntime.password)
 	}
 }

@@ -183,6 +183,7 @@ func executeApprovedDeploy(ctx context.Context, approval bson.M) (bson.M, error)
 	deployDoc := bson.M{
 		"_id":            deployID,
 		"id":             deployID,
+		"activeKey":      operations.DeployActiveKey(serviceID, environment),
 		"serviceId":      serviceID,
 		"status":         operations.DeployStatusRequested,
 		"environment":    environment,
@@ -234,6 +235,7 @@ func executeApprovedDeploy(ctx context.Context, approval bson.M) (bson.M, error)
 		"serviceName":  shared.StringValue(service["name"]),
 	}
 	if err := shared.InsertOne(ctx, shared.Collection(shared.OperationsCollection), opDoc); err != nil {
+		_ = shared.DeleteByID(ctx, shared.Collection(shared.DeploysCollection), deployID)
 		return nil, err
 	}
 

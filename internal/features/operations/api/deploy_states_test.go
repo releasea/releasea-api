@@ -13,6 +13,7 @@ func TestNormalizeDeployStatus(t *testing.T) {
 		expect string
 	}{
 		{name: "maps success alias", input: "success", expect: DeployStatusCompleted},
+		{name: "maps rollback alias", input: "rollback", expect: DeployStatusRolledBack},
 		{name: "maps queued alias", input: StatusQueued, expect: DeployStatusScheduled},
 		{name: "maps in-progress alias", input: StatusInProgress, expect: DeployStatusDeploying},
 		{name: "normalizes whitespace and case", input: "  REQUESTED  ", expect: DeployStatusRequested},
@@ -30,6 +31,12 @@ func TestNormalizeDeployStatus(t *testing.T) {
 	}
 }
 
+func TestDeployActiveKeyNormalizesEnvironment(t *testing.T) {
+	if got, want := DeployActiveKey(" svc-123 ", " PROD "), "svc-123|prod"; got != want {
+		t.Fatalf("DeployActiveKey() = %q, want %q", got, want)
+	}
+}
+
 func TestCanTransitionDeployStatusIncludesRetryAndRollbackPaths(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -39,13 +46,14 @@ func TestCanTransitionDeployStatusIncludesRetryAndRollbackPaths(t *testing.T) {
 	}{
 		{name: "scheduled to retrying", current: DeployStatusScheduled, next: DeployStatusRetrying, expect: true},
 		{name: "retrying to preparing", current: DeployStatusRetrying, next: DeployStatusPreparing, expect: true},
-		{name: "deploying to rollback", current: DeployStatusDeploying, next: DeployStatusRollback, expect: true},
-		{name: "rollback to completed", current: DeployStatusRollback, next: DeployStatusCompleted, expect: true},
-		{name: "rollback to failed", current: DeployStatusRollback, next: DeployStatusFailed, expect: true},
+		{name: "deploying to rolling back", current: DeployStatusDeploying, next: DeployStatusRollingBack, expect: true},
+		{name: "rolling back to rolled back", current: DeployStatusRollingBack, next: DeployStatusRolledBack, expect: true},
+		{name: "rolling back to failed", current: DeployStatusRollingBack, next: DeployStatusFailed, expect: true},
 		{name: "queued alias to preparing", current: StatusQueued, next: DeployStatusPreparing, expect: true},
 		{name: "completed to retrying denied", current: DeployStatusCompleted, next: DeployStatusRetrying, expect: false},
-		{name: "failed to rollback denied", current: DeployStatusFailed, next: DeployStatusRollback, expect: false},
-		{name: "requested to completed denied", current: DeployStatusRequested, next: DeployStatusCompleted, expect: false},
+		{name: "failed to rolling back denied", current: DeployStatusFailed, next: DeployStatusRollingBack, expect: false},
+		{name: "requested to completed tolerates missed phases", current: DeployStatusRequested, next: DeployStatusCompleted, expect: true},
+		{name: "deploying to preparing delayed update denied", current: DeployStatusDeploying, next: DeployStatusPreparing, expect: false},
 		{name: "invalid source denied", current: "unknown", next: DeployStatusPreparing, expect: false},
 	}
 
@@ -131,6 +139,19 @@ func TestDeployStatusSlicesAreCopies(t *testing.T) {
 	nonTerminalB := DeployNonTerminalStatuses()
 	if nonTerminalB[0] == "mutated" {
 		t.Fatalf("DeployNonTerminalStatuses returned shared backing array")
+	}
+}
+
+func TestDeployQueueBlocksEveryNonTerminalPhase(t *testing.T) {
+	blocking := make(map[string]struct{})
+	for _, status := range DeployQueueBlockingStatuses() {
+		blocking[NormalizeDeployStatus(status)] = struct{}{}
+	}
+	for _, status := range DeployNonTerminalStatuses() {
+		normalized := NormalizeDeployStatus(status)
+		if _, ok := blocking[normalized]; !ok {
+			t.Fatalf("non-terminal deploy phase %q does not block a concurrent deploy", normalized)
+		}
 	}
 }
 

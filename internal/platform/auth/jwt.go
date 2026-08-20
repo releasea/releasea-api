@@ -406,6 +406,9 @@ func workerJWTAllowed(method, path string) bool {
 		if strings.Contains(path, "/rules/") && strings.HasSuffix(path, "/logs") {
 			return true
 		}
+		if strings.Contains(path, "/rule-deploys/") && strings.HasSuffix(path, "/logs") {
+			return true
+		}
 		if strings.Contains(path, "/operations/recover-stale-claims") {
 			return true
 		}

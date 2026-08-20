@@ -134,6 +134,51 @@ func TestGetServiceGitOpsRepositoryPolicyCheckReturnsInvalidWhenProviderLacksPRC
 	}
 }
 
+func TestGetServiceGitOpsRepositoryPolicyCheckRejectsTemplateSourceRepository(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	previousFindService := findServiceForDesiredState
+	findServiceForDesiredState = func(context.Context, string) (bson.M, error) {
+		return bson.M{
+			"id":             "svc-1",
+			"name":           "catalog-fastify-demo",
+			"managementMode": "managed",
+			"repoUrl":        "https://github.com/releasea/templates.git",
+			"templateSource": bson.M{
+				"owner": "releasea",
+				"repo":  "templates",
+				"path":  "api-node-fastify",
+			},
+		}, nil
+	}
+	defer func() { findServiceForDesiredState = previousFindService }()
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/services/svc-1/gitops/repository-policy-check", nil)
+	ctx.Params = gin.Params{{Key: "id", Value: "svc-1"}}
+
+	GetServiceGitOpsRepositoryPolicyCheck(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
+	}
+	var body serviceGitOpsRepositoryPolicyCheck
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response should be valid json: %v", err)
+	}
+	if body.Status != "invalid" || len(body.Checks) != 1 || body.Checks[0].ID != "application-repository" {
+		t.Fatalf("unexpected template repository policy: %#v", body)
+	}
+}
+
+func TestIsServiceTemplateSourceRepositoryRecognizesDefaultCatalog(t *testing.T) {
+	service := bson.M{"repoUrl": "git@github.com:releasea/templates.git"}
+	if !isServiceTemplateSourceRepository(service) {
+		t.Fatal("default Releasea catalog should not be accepted as an application repository")
+	}
+}
+
 func TestCreateServiceGitOpsPullRequestRejectsInvalidRepositoryPolicy(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

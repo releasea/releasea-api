@@ -242,7 +242,7 @@ func QueryPrometheusRange(ctx context.Context, baseURL, query string, start, end
 				continue
 			}
 			parsed, err := strconv.ParseFloat(rawValue, 64)
-			if err != nil {
+			if err != nil || math.IsNaN(parsed) || math.IsInf(parsed, 0) {
 				continue
 			}
 			samples = append(samples, PromSample{

@@ -12,9 +12,10 @@ type CredentialPayload struct {
 	Token      string `json:"token"`
 	PrivateKey string `json:"privateKey"`
 
-	RegistryURL string `json:"registryUrl"`
-	Username    string `json:"username"`
-	Password    string `json:"password"`
+	RegistryURL    string `json:"registryUrl"`
+	HealthCheckURL string `json:"healthCheckUrl"`
+	Username       string `json:"username"`
+	Password       string `json:"password"`
 
 	Notes string `json:"notes"`
 }

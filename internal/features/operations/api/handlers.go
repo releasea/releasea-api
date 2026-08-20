@@ -138,6 +138,10 @@ func UpdateOperationStatus(c *gin.Context) {
 		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
 		return
 	}
+	if !IsKnownOperationStatus(payload.Status) || payload.Status == StatusQueued {
+		shared.RespondError(c, http.StatusBadRequest, "Invalid operation status")
+		return
+	}
 
 	regValue, ok := c.Get("authWorkerRegistration")
 	if !ok {
@@ -174,8 +178,9 @@ func UpdateOperationStatus(c *gin.Context) {
 	}
 
 	currentStatus := shared.StringValue(op["status"])
+	isClaimRenewal := payload.Status == StatusInProgress && currentStatus == StatusInProgress && opRegID == regID
 	if payload.Status == StatusInProgress {
-		if currentStatus != StatusQueued {
+		if currentStatus != StatusQueued && !isClaimRenewal {
 			shared.RespondError(c, http.StatusConflict, "Operation already started")
 			return
 		}
@@ -185,7 +190,7 @@ func UpdateOperationStatus(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"status": payload.Status})
 			return
 		}
-		if currentStatus != StatusQueued && currentStatus != StatusInProgress {
+		if currentStatus != StatusInProgress {
 			shared.RespondError(c, http.StatusConflict, "Operation already finished")
 			return
 		}
@@ -206,9 +211,18 @@ func UpdateOperationStatus(c *gin.Context) {
 		update["workerRegistrationId"] = regID
 	}
 	if payload.Status == StatusInProgress {
-		update["startedAt"] = now
 		claimMetadata = buildOperationClaimMetadata(registration, regID, payload.Claim, nowTime)
-		update["claim"] = claimMetadata
+		if isClaimRenewal {
+			update["claim.lastHeartbeatAt"] = claimMetadata["lastHeartbeatAt"]
+			update["claim.leaseTTLSeconds"] = claimMetadata["leaseTTLSeconds"]
+			update["claim.leaseExpiresAt"] = claimMetadata["leaseExpiresAt"]
+			if queueName := shared.StringValue(claimMetadata["queueName"]); queueName != "" {
+				update["claim.queueName"] = queueName
+			}
+		} else {
+			update["startedAt"] = now
+			update["claim"] = claimMetadata
+		}
 	}
 	if payload.Status == StatusSucceeded || payload.Status == StatusFailed {
 		update["finishedAt"] = now
@@ -221,13 +235,64 @@ func UpdateOperationStatus(c *gin.Context) {
 	if payload.Error != "" {
 		update["error"] = payload.Error
 	}
+
+	terminalStatus := payload.Status == StatusSucceeded || payload.Status == StatusFailed
+	if terminalStatus {
+		claim := shared.MapPayload(op["claim"])
+		ttlSeconds := normalizeOperationClaimLeaseTTL(shared.IntValue(claim["leaseTTLSeconds"]))
+		reserveFilter := bson.M{
+			"id":                   id,
+			"status":               StatusInProgress,
+			"workerRegistrationId": regID,
+		}
+		if leaseExpiresAt := shared.StringValue(claim["leaseExpiresAt"]); leaseExpiresAt != "" {
+			reserveFilter["claim.leaseExpiresAt"] = leaseExpiresAt
+		}
+		reserveResult, reserveErr := shared.Collection(shared.OperationsCollection).UpdateOne(ctx, reserveFilter, bson.M{"$set": bson.M{
+			"updatedAt":              now,
+			"finalization.status":    payload.Status,
+			"finalization.startedAt": now,
+			"claim.lastHeartbeatAt":  now,
+			"claim.leaseExpiresAt":   nowTime.Add(time.Duration(ttlSeconds) * time.Second).Format(time.RFC3339),
+		}})
+		if reserveErr != nil {
+			shared.RespondError(c, http.StatusInternalServerError, "Failed to reserve operation finalization")
+			return
+		}
+		if reserveResult.MatchedCount == 0 {
+			shared.RespondError(c, http.StatusConflict, "Operation lease changed before finalization")
+			return
+		}
+	}
+
+	// Materialize terminal effects after reserving the current lease and before
+	// publishing the terminal operation state. If this fails, stale-claim
+	// recovery can safely retry the idempotent reconciliation.
+	if payload.Status == StatusSucceeded {
+		if err := applyOperationSuccess(ctx, op, now); err != nil {
+			shared.RespondError(c, http.StatusInternalServerError, "Failed to finalize operation")
+			return
+		}
+	}
+	if payload.Status == StatusFailed {
+		if err := applyOperationFailure(ctx, op, now); err != nil {
+			shared.RespondError(c, http.StatusInternalServerError, "Failed to rollback operation")
+			return
+		}
+	}
 	var matched bool
 	if payload.Status == StatusInProgress {
-		filter := bson.M{"id": id, "status": StatusQueued}
-		filter["$or"] = []bson.M{
-			{"workerRegistrationId": bson.M{"$exists": false}},
-			{"workerRegistrationId": ""},
-			{"workerRegistrationId": regID},
+		filter := bson.M{"id": id}
+		if isClaimRenewal {
+			filter["status"] = StatusInProgress
+			filter["workerRegistrationId"] = regID
+		} else {
+			filter["status"] = StatusQueued
+			filter["$or"] = []bson.M{
+				{"workerRegistrationId": bson.M{"$exists": false}},
+				{"workerRegistrationId": ""},
+				{"workerRegistrationId": regID},
+			}
 		}
 		result, err := shared.Collection(shared.OperationsCollection).UpdateOne(ctx, filter, bson.M{"$set": update})
 		if err != nil {
@@ -237,15 +302,10 @@ func UpdateOperationStatus(c *gin.Context) {
 		matched = result.MatchedCount > 0
 	} else if payload.Status == StatusSucceeded || payload.Status == StatusFailed {
 		filter := bson.M{
-			"id": id,
-			"status": bson.M{
-				"$in": []string{StatusQueued, StatusInProgress},
-			},
-			"$or": []bson.M{
-				{"workerRegistrationId": bson.M{"$exists": false}},
-				{"workerRegistrationId": ""},
-				{"workerRegistrationId": regID},
-			},
+			"id":                   id,
+			"status":               StatusInProgress,
+			"workerRegistrationId": regID,
+			"finalization.status":  payload.Status,
 		}
 		result, err := shared.Collection(shared.OperationsCollection).UpdateOne(ctx, filter, bson.M{"$set": update})
 		if err != nil {
@@ -265,20 +325,12 @@ func UpdateOperationStatus(c *gin.Context) {
 		return
 	}
 
-	if payload.Status == StatusInProgress {
+	if payload.Status == StatusInProgress && !isClaimRenewal {
 		applyOperationStart(ctx, op, now)
 	}
-	if payload.Status == StatusSucceeded {
-		if err := applyOperationSuccess(ctx, op, now); err != nil {
-			shared.RespondError(c, http.StatusInternalServerError, "Failed to finalize operation")
-			return
-		}
-	}
-	if payload.Status == StatusFailed {
-		if err := applyOperationFailure(ctx, op, now); err != nil {
-			shared.RespondError(c, http.StatusInternalServerError, "Failed to rollback operation")
-			return
-		}
+	if isClaimRenewal {
+		c.JSON(http.StatusOK, gin.H{"status": payload.Status, "leaseExpiresAt": claimMetadata["leaseExpiresAt"]})
+		return
 	}
 
 	shared.RecordAuditEvent(ctx, shared.AuditEvent{

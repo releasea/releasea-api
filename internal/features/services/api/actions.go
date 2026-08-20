@@ -89,6 +89,20 @@ func CreateDeploy(c *gin.Context) {
 	now := shared.NowISO()
 	deployDoc, err := persistDeployRecord(ctx, service, request, resolution, triggeredBy, now)
 	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			blocked, lookupErr := respondIfActiveDeployBlocked(c, ctx, request.ServiceID, request.Environment)
+			if blocked {
+				return
+			}
+			if lookupErr != nil {
+				shared.LogError("service.deploy.concurrent_lookup_failed", lookupErr, shared.LogFields{
+					"serviceId":   request.ServiceID,
+					"environment": request.Environment,
+				})
+			}
+			shared.RespondError(c, http.StatusConflict, "A deploy is already active for this service and environment")
+			return
+		}
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to create deploy")
 		return
 	}
@@ -108,6 +122,15 @@ func CreateDeploy(c *gin.Context) {
 		now,
 	)
 	if err != nil {
+		// A deploy without its operation would remain permanently requested and
+		// block every later deploy for the same service/environment. Compensate
+		// the first insert so a retry with the same idempotency key is safe.
+		if cleanupErr := shared.DeleteByID(ctx, shared.Collection(shared.DeploysCollection), deployID); cleanupErr != nil {
+			shared.LogError("service.deploy.partial_record_cleanup_failed", cleanupErr, shared.LogFields{
+				"serviceId": request.ServiceID,
+				"deployId":  deployID,
+			})
+		}
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to queue deploy")
 		return
 	}

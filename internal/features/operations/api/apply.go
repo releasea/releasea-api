@@ -54,13 +54,17 @@ func applyOperationSuccess(ctx context.Context, op bson.M, now string) error {
 	case OperationTypeServiceDeploy:
 		deployID := shared.StringValue(op["deployId"])
 		if deployID != "" {
-			if err := shared.UpdateByID(ctx, shared.Collection(shared.DeploysCollection), deployID, bson.M{
-				"status":                   DeployStatusCompleted,
-				"finishedAt":               now,
-				"strategyStatus.phase":     DeployStatusCompleted,
-				"strategyStatus.summary":   "New version active",
-				"strategyStatus.updatedAt": now,
-			}); err != nil {
+			_, err := shared.Collection(shared.DeploysCollection).UpdateOne(ctx, bson.M{"_id": deployID}, bson.M{
+				"$set": bson.M{
+					"status":                   DeployStatusCompleted,
+					"finishedAt":               now,
+					"strategyStatus.phase":     DeployStatusCompleted,
+					"strategyStatus.summary":   "New version active",
+					"strategyStatus.updatedAt": now,
+				},
+				"$unset": bson.M{"activeKey": ""},
+			})
+			if err != nil {
 				return err
 			}
 		}
@@ -137,7 +141,7 @@ func applyOperationSuccess(ctx context.Context, op bson.M, now string) error {
 		serviceID := strings.TrimSpace(shared.StringValue(payload["serviceId"]))
 		deletionRequestID := strings.TrimSpace(shared.StringValue(payload["deletionRequestId"]))
 		if serviceID != "" && deletionRequestID != "" {
-			return finalizeServiceDeletionRequestIfComplete(ctx, serviceID, deletionRequestID)
+			return finalizeServiceDeletionRequestIfComplete(ctx, serviceID, deletionRequestID, shared.StringValue(op["id"]))
 		}
 		return nil
 	case OperationTypeServicePromoteCanary:
@@ -156,6 +160,22 @@ func applyOperationSuccess(ctx context.Context, op bson.M, now string) error {
 			})
 		}
 		return nil
+	case OperationTypeServiceScale:
+		serviceID := shared.StringValue(op["resourceId"])
+		payload := shared.MapPayload(op["payload"])
+		active := shared.BoolValue(payload["active"])
+		if serviceID != "" {
+			status := "idle"
+			if active {
+				status = "pending"
+			}
+			return shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, bson.M{
+				"isActive":  active,
+				"status":    status,
+				"updatedAt": now,
+			})
+		}
+		return nil
 	case OperationTypeServiceDelete:
 		serviceID := shared.StringValue(op["resourceId"])
 		if serviceID == "" {
@@ -164,11 +184,12 @@ func applyOperationSuccess(ctx context.Context, op bson.M, now string) error {
 		payload := shared.MapPayload(op["payload"])
 		deletionRequestID := strings.TrimSpace(shared.StringValue(payload["deletionRequestId"]))
 		if deletionRequestID != "" {
-			return finalizeServiceDeletionRequestIfComplete(ctx, serviceID, deletionRequestID)
+			return finalizeServiceDeletionRequestIfComplete(ctx, serviceID, deletionRequestID, shared.StringValue(op["id"]))
 		}
 		filter := bson.M{
 			"type":       OperationTypeServiceDelete,
 			"resourceId": serviceID,
+			"id":         bson.M{"$ne": shared.StringValue(op["id"])},
 			"status":     bson.M{"$in": []string{StatusQueued, StatusInProgress}},
 		}
 		pending, err := shared.Collection(shared.OperationsCollection).CountDocuments(ctx, filter)
@@ -183,13 +204,14 @@ func applyOperationSuccess(ctx context.Context, op bson.M, now string) error {
 	return nil
 }
 
-func finalizeServiceDeletionRequestIfComplete(ctx context.Context, serviceID, deletionRequestID string) error {
+func finalizeServiceDeletionRequestIfComplete(ctx context.Context, serviceID, deletionRequestID, currentOperationID string) error {
 	pending, err := shared.Collection(shared.OperationsCollection).CountDocuments(ctx, bson.M{
 		"$or": []bson.M{
 			{"type": OperationTypeServiceDelete, "resourceId": serviceID},
 			{"type": OperationTypeRuleDelete, "payload.serviceId": serviceID},
 		},
 		"payload.deletionRequestId": deletionRequestID,
+		"id":                        bson.M{"$ne": currentOperationID},
 		"status":                    bson.M{"$ne": StatusSucceeded},
 	})
 	if err != nil {
@@ -484,27 +506,31 @@ func applyOperationFailure(ctx context.Context, op bson.M, now string) error {
 		summary := "Deployment failed"
 		if deployID != "" {
 			if currentDeploy, err := shared.FindOne(ctx, shared.Collection(shared.DeploysCollection), bson.M{"id": deployID}); err == nil {
-				if NormalizeDeployStatus(shared.StringValue(currentDeploy["status"])) == DeployStatusRollback {
-					deployStatus = DeployStatusRollback
-					phase = DeployStatusRollback
+				if NormalizeDeployStatus(shared.StringValue(currentDeploy["status"])) == DeployStatusRollingBack {
+					deployStatus = DeployStatusRolledBack
+					phase = DeployStatusRolledBack
 					summary = "Rollback completed. Previous version restored"
 				}
 			}
 		}
 		if deployID != "" {
-			if err := shared.UpdateByID(ctx, shared.Collection(shared.DeploysCollection), deployID, bson.M{
-				"status":                   deployStatus,
-				"finishedAt":               now,
-				"strategyStatus.phase":     phase,
-				"strategyStatus.summary":   summary,
-				"strategyStatus.updatedAt": now,
-			}); err != nil {
+			_, err := shared.Collection(shared.DeploysCollection).UpdateOne(ctx, bson.M{"_id": deployID}, bson.M{
+				"$set": bson.M{
+					"status":                   deployStatus,
+					"finishedAt":               now,
+					"strategyStatus.phase":     phase,
+					"strategyStatus.summary":   summary,
+					"strategyStatus.updatedAt": now,
+				},
+				"$unset": bson.M{"activeKey": ""},
+			})
+			if err != nil {
 				return err
 			}
 		}
 		serviceID := shared.StringValue(op["resourceId"])
 		if serviceID != "" {
-			if deployStatus == DeployStatusRollback {
+			if deployStatus == DeployStatusRolledBack {
 				_ = shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, bson.M{"status": "running", "isActive": true, "updatedAt": now})
 			} else {
 				_ = shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, bson.M{"status": "error", "isActive": false})
@@ -541,6 +567,18 @@ func applyOperationFailure(ctx context.Context, op bson.M, now string) error {
 		serviceID := shared.StringValue(op["resourceId"])
 		if serviceID != "" {
 			_ = shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, bson.M{"status": "error", "isActive": false, "updatedAt": now})
+		}
+		return nil
+	case OperationTypeServiceScale:
+		serviceID := shared.StringValue(op["resourceId"])
+		payload := shared.MapPayload(op["payload"])
+		if serviceID != "" {
+			previousActive := shared.BoolValue(payload["previousActive"])
+			_ = shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, bson.M{
+				"isActive":  previousActive,
+				"status":    "error",
+				"updatedAt": now,
+			})
 		}
 		return nil
 	}

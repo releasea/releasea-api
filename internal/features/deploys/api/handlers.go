@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strings"
 
 	operations "releaseaapi/internal/features/operations/api"
 	"releaseaapi/internal/platform/shared"
@@ -33,6 +34,7 @@ func AppendDeployLogs(c *gin.Context) {
 	var payload struct {
 		Lines          []string               `json:"lines"`
 		Line           string                 `json:"line"`
+		LogBatchID     string                 `json:"logBatchId"`
 		Status         string                 `json:"status"`
 		StrategyStatus map[string]interface{} `json:"strategyStatus"`
 	}
@@ -56,8 +58,17 @@ func AppendDeployLogs(c *gin.Context) {
 	setUpdate := bson.M{
 		"updatedAt": now,
 	}
+	updateFilter := bson.M{"_id": deployID}
+	logBatchID := strings.TrimSpace(payload.LogBatchID)
+	if logBatchID != "" && len(lines) > 0 {
+		// A stable worker-generated batch ID makes a retried delivery exactly
+		// once even when the first response is lost after MongoDB commits it.
+		updateFilter["logBatchIds"] = bson.M{"$ne": logBatchID}
+	}
+	nextStatus := ""
+	terminalStatus := false
 	if payload.Status != "" {
-		nextStatus := operations.NormalizeDeployStatus(payload.Status)
+		nextStatus = operations.NormalizeDeployStatus(payload.Status)
 		if !operations.IsKnownDeployStatus(nextStatus) {
 			shared.RespondError(c, http.StatusBadRequest, "Invalid deploy status")
 			return
@@ -67,7 +78,8 @@ func AppendDeployLogs(c *gin.Context) {
 			shared.RespondError(c, http.StatusNotFound, "Deploy not found")
 			return
 		}
-		currentStatus := operations.NormalizeDeployStatus(shared.StringValue(currentDeploy["status"]))
+		currentRawStatus := shared.StringValue(currentDeploy["status"])
+		currentStatus := operations.NormalizeDeployStatus(currentRawStatus)
 		if currentStatus == "" {
 			currentStatus = operations.DeployStatusRequested
 		}
@@ -75,8 +87,12 @@ func AppendDeployLogs(c *gin.Context) {
 			shared.RespondError(c, http.StatusConflict, "Invalid deploy status transition")
 			return
 		}
+		// Compare-and-set prevents a delayed worker update from moving a deploy
+		// backwards after another transition has already won the race.
+		updateFilter["status"] = currentRawStatus
 		setUpdate["status"] = nextStatus
-		if nextStatus == operations.DeployStatusCompleted || nextStatus == operations.DeployStatusFailed || nextStatus == operations.DeployStatusRollback {
+		if nextStatus == operations.DeployStatusCompleted || nextStatus == operations.DeployStatusFailed || nextStatus == operations.DeployStatusRolledBack {
+			terminalStatus = true
 			setUpdate["finishedAt"] = now
 		}
 		if payload.StrategyStatus == nil {
@@ -95,19 +111,61 @@ func AppendDeployLogs(c *gin.Context) {
 	update := bson.M{
 		"$set": setUpdate,
 	}
+	if terminalStatus {
+		update["$unset"] = bson.M{"activeKey": ""}
+	}
 	if len(lines) > 0 {
 		update["$push"] = bson.M{
 			"logs": bson.M{
 				"$each": lines,
 			},
 		}
+		if logBatchID != "" {
+			update["$addToSet"] = bson.M{"logBatchIds": logBatchID}
+		}
 	}
 
 	col := shared.Collection(shared.DeploysCollection)
-	if _, err := col.UpdateOne(ctx, bson.M{"_id": deployID}, update); err != nil {
+	result, err := col.UpdateOne(ctx, updateFilter, update)
+	if err != nil {
 		log.Printf("[db] error during appendDeployLogs on %s: %v", col.Name(), err)
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to append deploy logs")
 		return
 	}
+	if result.MatchedCount == 0 {
+		// A repeated delivery of the same status is idempotent. Any different
+		// winner is a real conflict and must not receive stale logs or metadata.
+		currentDeploy, findErr := shared.FindOne(ctx, col, bson.M{"_id": deployID})
+		if findErr == nil {
+			if logBatchID != "" && containsBSONString(currentDeploy["logBatchIds"], logBatchID) {
+				c.Status(http.StatusNoContent)
+				return
+			}
+			if nextStatus != "" && operations.NormalizeDeployStatus(shared.StringValue(currentDeploy["status"])) == nextStatus {
+				c.Status(http.StatusNoContent)
+				return
+			}
+		}
+		shared.RespondError(c, http.StatusConflict, "Deploy status changed concurrently")
+		return
+	}
 	c.Status(http.StatusNoContent)
+}
+
+func containsBSONString(raw interface{}, target string) bool {
+	switch values := raw.(type) {
+	case []string:
+		for _, value := range values {
+			if value == target {
+				return true
+			}
+		}
+	case bson.A:
+		for _, value := range values {
+			if text, ok := value.(string); ok && text == target {
+				return true
+			}
+		}
+	}
+	return false
 }

@@ -245,19 +245,20 @@ func CreateRegistryCredential(c *gin.Context) {
 	id := "reg-cred-" + uuid.NewString()
 	now := shared.NowISO()
 	doc := bson.M{
-		"_id":         id,
-		"id":          id,
-		"name":        strings.TrimSpace(payload.Name),
-		"provider":    payload.Provider,
-		"registryUrl": strings.TrimSpace(payload.RegistryURL),
-		"username":    strings.TrimSpace(payload.Username),
-		"password":    encryptedPassword,
-		"scope":       scope,
-		"projectId":   strings.TrimSpace(payload.ProjectID),
-		"serviceId":   strings.TrimSpace(payload.ServiceID),
-		"notes":       strings.TrimSpace(payload.Notes),
-		"createdAt":   now,
-		"updatedAt":   now,
+		"_id":            id,
+		"id":             id,
+		"name":           strings.TrimSpace(payload.Name),
+		"provider":       payload.Provider,
+		"registryUrl":    strings.TrimSpace(payload.RegistryURL),
+		"healthCheckUrl": strings.TrimSpace(payload.HealthCheckURL),
+		"username":       strings.TrimSpace(payload.Username),
+		"password":       encryptedPassword,
+		"scope":          scope,
+		"projectId":      strings.TrimSpace(payload.ProjectID),
+		"serviceId":      strings.TrimSpace(payload.ServiceID),
+		"notes":          strings.TrimSpace(payload.Notes),
+		"createdAt":      now,
+		"updatedAt":      now,
 	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
@@ -305,6 +306,9 @@ func UpdateRegistryCredential(c *gin.Context) {
 	}
 	if payload.RegistryURL != "" {
 		update["registryUrl"] = payload.RegistryURL
+	}
+	if payload.HealthCheckURL != "" {
+		update["healthCheckUrl"] = strings.TrimSpace(payload.HealthCheckURL)
 	}
 	if payload.Username != "" {
 		update["username"] = payload.Username

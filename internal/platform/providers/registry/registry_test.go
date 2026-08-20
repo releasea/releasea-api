@@ -40,10 +40,11 @@ func TestResolveRuntimeHealthCheck(t *testing.T) {
 	}
 
 	if err := runtime.HealthCheck(context.Background(), map[string]interface{}{
-		"username":    "releasea",
-		"password":    "secret",
-		"registryUrl": server.URL,
+		"username":       "releasea",
+		"password":       "secret",
+		"registryUrl":    "http://registry.cluster.invalid:5000",
+		"healthCheckUrl": server.URL,
 	}); err != nil {
-		t.Fatalf("expected registry healthcheck to succeed: %v", err)
+		t.Fatalf("expected registry healthcheck override to succeed: %v", err)
 	}
 }

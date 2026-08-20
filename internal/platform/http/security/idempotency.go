@@ -56,10 +56,10 @@ var idempotencyState = &idempotencyStore{
 var mongoIdempotencyState mongoIdempotencyStore
 
 func activeIdempotencyBackend() idempotencyBackend {
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("IDEMPOTENCY_BACKEND")), "mongo") {
-		return mongoIdempotencyState
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("IDEMPOTENCY_BACKEND")), "memory") {
+		return idempotencyState
 	}
-	return idempotencyState
+	return mongoIdempotencyState
 }
 
 func RequireIdempotencyKey() gin.HandlerFunc {

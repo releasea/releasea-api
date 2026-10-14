@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -182,10 +181,27 @@ func ResponseError(status int, body []byte, fallback string) error {
 		return nil
 	}
 	msg := ErrorMessage(body)
-	if msg == "" {
-		msg = fallback
+	operation := strings.TrimSpace(fallback)
+	if operation == "" {
+		operation = "GitHub request failed"
 	}
-	return errors.New(msg)
+
+	switch status {
+	case http.StatusUnauthorized:
+		return fmt.Errorf("%s: GitHub authentication failed (HTTP 401). The selected token is invalid, expired, revoked, or malformed. Update the GitHub SCM credential and try again", operation)
+	case http.StatusForbidden:
+		if msg == "" {
+			msg = "the token does not have access to this operation"
+		}
+		return fmt.Errorf("%s: GitHub denied access (HTTP 403): %s. Confirm the token permissions and, for organizations, its SSO authorization", operation, msg)
+	case http.StatusTooManyRequests:
+		return fmt.Errorf("%s: GitHub rate limit exceeded (HTTP 429). Wait for the limit to reset or use a token with available quota", operation)
+	}
+
+	if msg == "" {
+		return fmt.Errorf("%s (GitHub HTTP %d)", operation, status)
+	}
+	return fmt.Errorf("%s (GitHub HTTP %d): %s", operation, status, msg)
 }
 
 func ErrorMessage(body []byte) string {

@@ -72,7 +72,32 @@ func (githubRuntime) CheckTemplateRepoAvailability(ctx context.Context, token, o
 }
 
 func (githubRuntime) CreateTemplateRepo(ctx context.Context, token string, payload scmmodels.TemplateRepoRequest) (*scmmodels.TemplateRepoResponse, error) {
-	client := httpclient.New(20 * time.Second)
+	client := httpclient.New(60 * time.Second)
+
+	repoOwner := payload.Owner
+	if repoOwner == "" {
+		userURL := "https://api.github.com/user"
+		body, status, err := gh.RequestWithClient(ctx, client, token, http.MethodGet, userURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("GitHub request failed: %w", err)
+		}
+		if err := gh.ResponseError(status, body, "Failed to resolve GitHub user"); err != nil {
+			return nil, err
+		}
+		var user scmmodels.GitHubUserInfo
+		if err := json.Unmarshal(body, &user); err != nil {
+			return nil, errors.New("failed to parse GitHub user")
+		}
+		repoOwner = user.Login
+	}
+
+	exists, err := githubRuntime{}.CheckTemplateRepoAvailability(ctx, token, repoOwner, payload.Name)
+	if err != nil {
+		return nil, err
+	}
+	if exists {
+		return nil, fmt.Errorf("repository %s/%s already exists", repoOwner, payload.Name)
+	}
 
 	templateInfo, err := fetchGithubRepoInfo(ctx, client, token, payload.TemplateOwner, payload.TemplateRepo)
 	if err != nil {
@@ -119,7 +144,6 @@ func (githubRuntime) CreateTemplateRepo(ctx context.Context, token string, paylo
 		return nil, err
 	}
 
-	repoOwner := payload.Owner
 	if repo.Owner.Login != "" {
 		repoOwner = repo.Owner.Login
 	}
@@ -704,6 +728,12 @@ func createGithubRepo(ctx context.Context, client *http.Client, token string, pa
 	body, status, err = gh.RequestWithClient(ctx, client, token, http.MethodPost, endpoint, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("GitHub request failed: %w", err)
+	}
+	if status == http.StatusUnprocessableEntity {
+		msg := gh.ErrorMessage(body)
+		if strings.Contains(strings.ToLower(msg), "already exists") {
+			return nil, fmt.Errorf("repository %s/%s already exists", payload.Owner, payload.Name)
+		}
 	}
 	if err := gh.ResponseError(status, body, "Failed to create repository"); err != nil {
 		return nil, err

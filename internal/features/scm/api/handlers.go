@@ -3,8 +3,10 @@ package scm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	scmmodels "releaseaapi/internal/platform/models"
 	scmproviders "releaseaapi/internal/platform/providers/scm"
@@ -65,7 +67,7 @@ func CreateTemplateRepo(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 	defer cancel()
 
 	runtime, token, statusCode, err := resolveScmRuntimeToken(ctx, payload.ScmCredentialID, payload.ProjectID, scmproviders.CapabilityTemplateRepo)
@@ -74,12 +76,64 @@ func CreateTemplateRepo(c *gin.Context) {
 		return
 	}
 
-	repo, err := runtime.CreateTemplateRepo(ctx, token, payload)
+	repo, err := createTemplateRepoWithRetry(ctx, runtime, token, payload)
 	if err != nil {
 		shared.RespondError(c, http.StatusBadGateway, err.Error())
 		return
 	}
 	c.JSON(http.StatusOK, repo)
+}
+
+func createTemplateRepoWithRetry(ctx context.Context, runtime scmproviders.Runtime, token string, payload scmmodels.TemplateRepoRequest) (*scmmodels.TemplateRepoResponse, error) {
+	var repo *scmmodels.TemplateRepoResponse
+	var err error
+
+	maxAttempts := 3
+	baseDelay := 2 * time.Second
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		repo, err = runtime.CreateTemplateRepo(ctx, token, payload)
+		if err == nil {
+			return repo, nil
+		}
+
+		errMsg := strings.ToLower(err.Error())
+		if strings.Contains(errMsg, "already exists") {
+			existingRepo, fetchErr := fetchExistingRepo(ctx, runtime, token, payload.Owner, payload.Name)
+			if fetchErr == nil && existingRepo != nil {
+				return existingRepo, nil
+			}
+			return nil, err
+		}
+
+		if attempt < maxAttempts {
+			delay := baseDelay * time.Duration(1<<(attempt-1))
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+			continue
+		}
+	}
+
+	return nil, err
+}
+
+func fetchExistingRepo(ctx context.Context, runtime scmproviders.Runtime, token, owner, name string) (*scmmodels.TemplateRepoResponse, error) {
+	ghRuntime, ok := runtime.(interface {
+		CheckTemplateRepoAvailability(ctx context.Context, token, owner, name string) (bool, error)
+	})
+	if !ok {
+		return nil, fmt.Errorf("runtime does not support repo availability check")
+	}
+
+	exists, err := ghRuntime.CheckTemplateRepoAvailability(ctx, token, owner, name)
+	if err != nil || !exists {
+		return nil, fmt.Errorf("repository not found")
+	}
+
+	return nil, fmt.Errorf("repository exists but cannot fetch details")
 }
 
 func resolveScmCredential(ctx context.Context, scmCredentialID string, projectID string) (bson.M, error) {

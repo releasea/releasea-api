@@ -63,7 +63,7 @@ jobs:
       contents: read
     steps:
       - name: Delete old package versions (keep last 2)
-        uses: actions/delete-package-versions@v4
+        uses: actions/delete-package-versions@v5
         with:
           package-name: releasea-api
           package-type: container

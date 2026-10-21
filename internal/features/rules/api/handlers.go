@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 
 	operations "releaseaapi/internal/features/operations/api"
@@ -175,25 +176,10 @@ func createRuleFromPayload(c *gin.Context, payload map[string]interface{}, servi
 	}
 	hosts := shared.ToStringSlice(payload["hosts"])
 
-	policyMap := shared.MapPayload(payload["policy"])
-	action := shared.StringValue(policyMap["action"])
-	if action == "" {
-		action = "allow"
-	}
-	policy := bson.M{
-		"action":    action,
-		"timeoutMs": shared.IntValue(policyMap["timeoutMs"]),
-		"retries":   shared.IntValue(policyMap["retries"]),
-		"ipPolicy":  shared.StringValue(policyMap["ipPolicy"]),
-	}
-	if shared.IntValue(policy["timeoutMs"]) <= 0 {
-		policy["timeoutMs"] = 1500
-	}
-	if shared.IntValue(policy["retries"]) <= 0 {
-		policy["retries"] = 2
-	}
-	if shared.StringValue(policy["ipPolicy"]) == "" {
-		policy["ipPolicy"] = "open"
+	policy, err := normalizeRulePolicy(shared.MapPayload(payload["policy"]))
+	if err != nil {
+		shared.RespondError(c, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	internal := shared.BoolValue(payload["internal"])
@@ -236,10 +222,13 @@ func createRuleFromPayload(c *gin.Context, payload map[string]interface{}, servi
 		"updatedAt":   now,
 		"policy":      policy,
 		"logs":        []interface{}{},
+		"contractId":  "",
+		"revision":    1,
 	}
 	if shared.StringValue(ruleDoc["protocol"]) == "" {
 		ruleDoc["protocol"] = "https"
 	}
+	ruleDoc["contractId"] = ruleID
 
 	if err := shared.InsertOne(ctx, shared.Collection(shared.RulesCollection), ruleDoc); err != nil {
 		log.Printf("[rule.create] failed to insert rule: %v", err)
@@ -408,7 +397,12 @@ func UpdateRule(c *gin.Context) {
 		update["port"] = shared.IntValue(v)
 	}
 	if v, ok := payload["policy"]; ok {
-		update["policy"] = shared.MapPayload(v)
+		policy, policyErr := normalizeRulePolicy(shared.MapPayload(v))
+		if policyErr != nil {
+			shared.RespondError(c, http.StatusBadRequest, policyErr.Error())
+			return
+		}
+		update["policy"] = policy
 	}
 
 	if err := shared.UpdateByID(ctx, shared.Collection(shared.RulesCollection), ruleID, update); err != nil {
@@ -436,6 +430,150 @@ func UpdateRule(c *gin.Context) {
 		},
 	})
 	c.JSON(http.StatusOK, updated)
+}
+
+func normalizeRulePolicy(input map[string]interface{}) (bson.M, error) {
+	action := strings.ToLower(strings.TrimSpace(shared.StringValue(input["action"])))
+	if action == "" {
+		action = "allow"
+	}
+	if action != "allow" && action != "deny" {
+		return nil, errors.New("policy action must be allow or deny")
+	}
+
+	authMode := strings.ToLower(strings.TrimSpace(shared.StringValue(input["authMode"])))
+	if authMode == "" {
+		authMode = "public"
+	}
+	if authMode != "public" && authMode != "jwt" && authMode != "apikey" && authMode != "mtls" {
+		return nil, errors.New("access mode must be public, jwt, apikey, or mtls")
+	}
+	if action == "deny" {
+		authMode = "public"
+	}
+
+	issuer := strings.TrimSpace(shared.StringValue(input["jwtIssuer"]))
+	jwksURI := strings.TrimSpace(shared.StringValue(input["jwksUri"]))
+	if authMode == "jwt" {
+		if issuer == "" {
+			return nil, errors.New("JWT issuer is required when authenticated access is enabled")
+		}
+		if jwksURI == "" {
+			return nil, errors.New("JWKS URL is required when authenticated access is enabled")
+		}
+		parsedIssuer, issuerErr := url.ParseRequestURI(issuer)
+		parsedJWKS, jwksErr := url.ParseRequestURI(jwksURI)
+		if issuerErr != nil || parsedIssuer.Scheme == "" || parsedIssuer.Host == "" {
+			return nil, errors.New("JWT issuer must be a valid absolute URL")
+		}
+		if jwksErr != nil || parsedJWKS.Scheme == "" || parsedJWKS.Host == "" {
+			return nil, errors.New("JWKS URL must be a valid absolute URL")
+		}
+	}
+
+	timeoutMs := 1500
+	if _, ok := input["timeoutMs"]; ok {
+		timeoutMs = shared.IntValue(input["timeoutMs"])
+		if timeoutMs < 100 || timeoutMs > 60000 {
+			return nil, errors.New("timeout must be between 100 and 60000 milliseconds")
+		}
+	}
+	retries := 2
+	if _, ok := input["retries"]; ok {
+		retries = shared.IntValue(input["retries"])
+		if retries < 0 || retries > 5 {
+			return nil, errors.New("retries must be between 0 and 5")
+		}
+	}
+	ipPolicy := strings.ToLower(strings.TrimSpace(shared.StringValue(input["ipPolicy"])))
+	if ipPolicy == "" {
+		ipPolicy = "open"
+	}
+	if ipPolicy != "open" && ipPolicy != "allowlist" && ipPolicy != "blocklist" {
+		return nil, errors.New("ip policy must be open, allowlist, or blocklist")
+	}
+	ipList, err := normalizeIPList(shared.ToStringSlice(input["ipList"]))
+	if err != nil {
+		return nil, err
+	}
+	if ipPolicy != "open" && len(ipList) == 0 {
+		return nil, errors.New("ip policy requires at least one address or CIDR")
+	}
+	if ipPolicy == "open" {
+		ipList = []string{}
+	}
+	requiredHeaders, err := normalizeHeaderNames(shared.ToStringSlice(input["requiredHeaders"]))
+	if err != nil {
+		return nil, err
+	}
+	requiredScopes := normalizeTokenList(shared.ToStringSlice(input["requiredScopes"]))
+	if len(requiredScopes) > 8 {
+		return nil, errors.New("at most 8 required scopes are allowed")
+	}
+	apiKeyHeader := strings.ToLower(strings.TrimSpace(shared.StringValue(input["apiKeyHeader"])))
+	if apiKeyHeader == "" {
+		apiKeyHeader = "x-api-key"
+	}
+	if _, err := normalizeHeaderNames([]string{apiKeyHeader}); err != nil {
+		return nil, errors.New("API key header must be a valid HTTP header name")
+	}
+	apiKeys := normalizeTokenList(shared.ToStringSlice(input["apiKeys"]))
+	if authMode == "apikey" {
+		if len(apiKeys) == 0 {
+			return nil, errors.New("at least one API key is required")
+		}
+		if len(apiKeys) > 20 {
+			return nil, errors.New("at most 20 API keys are allowed")
+		}
+		for _, key := range apiKeys {
+			if len(key) < 8 || len(key) > 128 || strings.ContainsAny(key, " \t\r\n") {
+				return nil, errors.New("API keys must be 8 to 128 characters without spaces")
+			}
+		}
+	}
+	cors, err := normalizeCORS(shared.MapPayload(input["cors"]))
+	if err != nil {
+		return nil, err
+	}
+	rateLimit, err := normalizeRateLimit(shared.MapPayload(input["rateLimit"]))
+	if err != nil {
+		return nil, err
+	}
+	circuitBreaker, err := normalizeCircuitBreaker(shared.MapPayload(input["circuitBreaker"]))
+	if err != nil {
+		return nil, err
+	}
+	maxBodyBytes := shared.IntValue(input["maxBodyBytes"])
+	if maxBodyBytes != 0 && (maxBodyBytes < 1024 || maxBodyBytes > 10*1024*1024) {
+		return nil, errors.New("max body size must be 0 or between 1 KiB and 10 MiB")
+	}
+	securityHeaders := true
+	if _, ok := input["securityHeaders"]; ok {
+		securityHeaders = shared.BoolValue(input["securityHeaders"])
+	}
+	lockNetwork := shared.BoolValue(input["lockNetwork"])
+
+	return bson.M{
+		"action":          action,
+		"timeoutMs":       timeoutMs,
+		"retries":         retries,
+		"ipPolicy":        ipPolicy,
+		"ipList":          ipList,
+		"requiredHeaders": requiredHeaders,
+		"requiredScopes":  requiredScopes,
+		"apiKeyHeader":    apiKeyHeader,
+		"apiKeys":         apiKeys,
+		"cors":            cors,
+		"rateLimit":       rateLimit,
+		"circuitBreaker":  circuitBreaker,
+		"maxBodyBytes":    maxBodyBytes,
+		"securityHeaders": securityHeaders,
+		"lockNetwork":     lockNetwork,
+		"authMode":        authMode,
+		"jwtIssuer":       issuer,
+		"jwksUri":         jwksURI,
+		"audiences":       shared.ToStringSlice(input["audiences"]),
+	}, nil
 }
 
 func DeleteRule(c *gin.Context) {
@@ -863,4 +1001,182 @@ func PublishRule(c *gin.Context) {
 	})
 
 	c.JSON(http.StatusAccepted, gin.H{"operation": opDoc, "ruleDeploy": ruleDeployDoc})
+}
+
+func PromoteRule(c *gin.Context) {
+	ruleID := strings.TrimSpace(c.Param("id"))
+	if ruleID == "" {
+		shared.RespondError(c, http.StatusBadRequest, "Rule ID required")
+		return
+	}
+	var payload struct {
+		Environment string `json:"environment"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
+		return
+	}
+	if strings.TrimSpace(payload.Environment) == "" {
+		shared.RespondError(c, http.StatusBadRequest, "Target environment is required")
+		return
+	}
+	target := shared.NormalizeOperationEnvironment(payload.Environment)
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
+	defer cancel()
+
+	source, err := shared.FindOne(ctx, shared.Collection(shared.RulesCollection), bson.M{"id": ruleID})
+	if err != nil {
+		shared.RespondError(c, http.StatusNotFound, "Rule not found")
+		return
+	}
+	sourceEnvironment := shared.NormalizeOperationEnvironment(shared.StringValue(source["environment"]))
+	if target == sourceEnvironment {
+		shared.RespondError(c, http.StatusBadRequest, "Choose a different environment")
+		return
+	}
+	serviceID := shared.StringValue(source["serviceId"])
+	service, err := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID})
+	if err != nil {
+		shared.RespondError(c, http.StatusNotFound, "Service not found")
+		return
+	}
+	if respondIfObservedRuleManagementBlocked(c, service) {
+		return
+	}
+
+	name := shared.StringValue(source["name"])
+	contractID := strings.TrimSpace(shared.StringValue(source["contractId"]))
+	if contractID == "" {
+		contractID = ruleID
+	}
+	siblings, err := shared.FindAll(ctx, shared.Collection(shared.RulesCollection), bson.M{
+		"serviceId": serviceID,
+		"$or": []bson.M{
+			{"contractId": contractID},
+			{"id": contractID},
+			{"name": name},
+		},
+	})
+	if err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to load rule revisions")
+		return
+	}
+	revision := nextRuleRevision(source, siblings)
+	var existing bson.M
+	for _, item := range siblings {
+		if shared.NormalizeOperationEnvironment(shared.StringValue(item["environment"])) != target {
+			continue
+		}
+		if strings.TrimSpace(shared.StringValue(item["contractId"])) == contractID || shared.StringValue(item["name"]) == name {
+			existing = item
+			break
+		}
+	}
+	if existing != nil {
+		status := strings.ToLower(shared.StringValue(existing["status"]))
+		if status == operations.StatusQueued || status == operations.StatusInProgress || status == "publishing" {
+			shared.RespondError(c, http.StatusConflict, "The target environment is already publishing this rule")
+			return
+		}
+	}
+
+	now := shared.NowISO()
+	contract := bson.M{
+		"name":                    name,
+		"serviceId":               serviceID,
+		"contractId":              contractID,
+		"revision":                revision,
+		"environment":             target,
+		"hosts":                   []string{},
+		"paths":                   shared.ToStringSlice(source["paths"]),
+		"methods":                 shared.ToStringSlice(source["methods"]),
+		"protocol":                shared.StringValue(source["protocol"]),
+		"port":                    shared.IntValue(source["port"]),
+		"policy":                  shared.MapPayload(source["policy"]),
+		"promotedFromRuleId":      ruleID,
+		"promotedFromEnvironment": sourceEnvironment,
+		"updatedAt":               now,
+	}
+	if shared.StringValue(contract["protocol"]) == "" {
+		contract["protocol"] = "https"
+	}
+	if shared.IntValue(contract["port"]) <= 0 {
+		contract["port"] = shared.IntValue(service["port"])
+	}
+
+	internal := false
+	external := false
+	republish := false
+	var ruleDoc bson.M
+	if existing == nil {
+		promotedID := "rule-" + uuid.NewString()
+		ruleDoc = bson.M{
+			"_id":       promotedID,
+			"id":        promotedID,
+			"status":    "draft",
+			"gateways":  []string{},
+			"createdAt": now,
+			"logs":      []interface{}{},
+		}
+		for key, value := range contract {
+			ruleDoc[key] = value
+		}
+		if err := shared.InsertOne(ctx, shared.Collection(shared.RulesCollection), ruleDoc); err != nil {
+			shared.RespondError(c, http.StatusInternalServerError, "Failed to promote rule")
+			return
+		}
+	} else {
+		promotedID := shared.StringValue(existing["id"])
+		if err := shared.UpdateByID(ctx, shared.Collection(shared.RulesCollection), promotedID, contract); err != nil {
+			shared.RespondError(c, http.StatusInternalServerError, "Failed to promote rule")
+			return
+		}
+		ruleDoc = existing
+		for key, value := range contract {
+			ruleDoc[key] = value
+		}
+		internal, external = rulePublicationFlags(shared.ToStringSlice(existing["gateways"]))
+		republish = strings.EqualFold(shared.StringValue(existing["status"]), "published") && (internal || external)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"rule":      ruleDoc,
+		"revision":  revision,
+		"republish": republish,
+		"internal":  internal,
+		"external":  external,
+	})
+}
+
+func nextRuleRevision(source bson.M, siblings []bson.M) int {
+	revision := shared.IntValue(source["revision"])
+	if revision < 1 {
+		revision = 1
+	}
+	for _, item := range siblings {
+		if candidate := shared.IntValue(item["revision"]); candidate > revision {
+			revision = candidate
+		}
+	}
+	return revision + 1
+}
+
+func rulePublicationFlags(gateways []string) (bool, bool) {
+	internal := false
+	external := false
+	for _, gateway := range gateways {
+		value := strings.ToLower(strings.TrimSpace(gateway))
+		if value == "" || value == "mesh" {
+			continue
+		}
+		if strings.Contains(value, "external") {
+			external = true
+			continue
+		}
+		if strings.Contains(value, "internal") {
+			internal = true
+		}
+	}
+	return internal, external
 }

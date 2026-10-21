@@ -28,6 +28,11 @@ func TestToStringSlice(t *testing.T) {
 	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
 		t.Fatalf("ToStringSlice([]interface{}) unexpected result: %#v", got)
 	}
+
+	fromMongo := ToStringSlice(bson.A{"istio-system/releasea-internal-gateway", 1, "mesh"})
+	if len(fromMongo) != 2 || fromMongo[0] != "istio-system/releasea-internal-gateway" || fromMongo[1] != "mesh" {
+		t.Fatalf("ToStringSlice(bson.A) unexpected result: %#v", fromMongo)
+	}
 }
 
 func TestToInterfaceSlice(t *testing.T) {

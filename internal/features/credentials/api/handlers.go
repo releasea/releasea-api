@@ -386,6 +386,7 @@ func WorkerCredentials(c *gin.Context) {
 		shared.RespondError(c, http.StatusNotFound, "Service not found")
 		return
 	}
+	applyEnvironmentBlueGreenSlot(service, payload.Environment)
 	serviceModel := platformmodels.ServiceFromBSON(service)
 	var projectModel *platformmodels.Project
 	if serviceModel.ProjectID != "" {
@@ -502,6 +503,21 @@ func buildCredentialFilter(c *gin.Context) bson.M {
 		filter["serviceId"] = serviceID
 	}
 	return filter
+}
+
+func applyEnvironmentBlueGreenSlot(service bson.M, environment string) {
+	strategy := shared.MapPayload(service["deploymentStrategy"])
+	if len(strategy) == 0 {
+		return
+	}
+	slots := shared.MapPayload(strategy["environmentSlots"])
+	envKey := shared.NormalizeOperationEnvironment(environment)
+	slot := strings.ToLower(strings.TrimSpace(shared.StringValue(slots[envKey])))
+	if slot != "blue" && slot != "green" {
+		return
+	}
+	strategy["blueGreenPrimary"] = slot
+	service["deploymentStrategy"] = strategy
 }
 
 func logWorkerCredentials(serviceID string, scmCred bson.M, regCred bson.M) {

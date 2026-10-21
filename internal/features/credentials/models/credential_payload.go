@@ -21,5 +21,6 @@ type CredentialPayload struct {
 }
 
 type WorkerCredentialsRequest struct {
-	ServiceID string `json:"serviceId"`
+	ServiceID   string `json:"serviceId"`
+	Environment string `json:"environment"`
 }

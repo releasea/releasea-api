@@ -60,16 +60,23 @@ func ToStringSlice(value interface{}) []string {
 	case []string:
 		return append([]string{}, v...)
 	case []interface{}:
-		out := make([]string, 0, len(v))
-		for _, item := range v {
-			if s, ok := item.(string); ok {
-				out = append(out, s)
-			}
-		}
-		return out
+		return stringsFromInterfaces(v)
+	case bson.A:
+		// MongoDB decodes arrays as primitive.A, a defined slice type that does not match []interface{}.
+		return stringsFromInterfaces([]interface{}(v))
 	default:
 		return []string{}
 	}
+}
+
+func stringsFromInterfaces(values []interface{}) []string {
+	out := make([]string, 0, len(values))
+	for _, item := range values {
+		if s, ok := item.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func ToInterfaceSlice(value interface{}) []interface{} {

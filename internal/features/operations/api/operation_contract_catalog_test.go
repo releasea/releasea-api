@@ -17,6 +17,7 @@ func TestSupportedOperationTypes(t *testing.T) {
 	want := []string{
 		OperationTypeServiceDeploy,
 		OperationTypeServicePromoteCanary,
+		OperationTypeServiceSwitchBlueGreen,
 		OperationTypeServiceDelete,
 		OperationTypeRuleDeploy,
 		OperationTypeRulePublish,

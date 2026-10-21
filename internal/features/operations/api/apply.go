@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 func applyOperationStart(ctx context.Context, op bson.M, now string) {
@@ -27,7 +28,7 @@ func applyOperationStart(ctx context.Context, op bson.M, now string) {
 		if serviceID != "" {
 			_ = shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, bson.M{"status": "pending", "isActive": false})
 		}
-	case OperationTypeServicePromoteCanary:
+	case OperationTypeServicePromoteCanary, OperationTypeServiceSwitchBlueGreen:
 		serviceID := shared.StringValue(op["resourceId"])
 		if serviceID != "" {
 			_ = shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, bson.M{"status": "pending", "updatedAt": now})
@@ -53,56 +54,75 @@ func applyOperationSuccess(ctx context.Context, op bson.M, now string) error {
 	switch opType {
 	case OperationTypeServiceDeploy:
 		deployID := shared.StringValue(op["deployId"])
+		serviceID := shared.StringValue(op["resourceId"])
+		payload := shared.MapPayload(op["payload"])
+		summary := "New version active"
+		var service bson.M
+		if serviceID != "" {
+			loaded, err := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID})
+			if err == nil {
+				service = loaded
+			}
+		}
+		strategyType := strings.ToLower(strings.TrimSpace(shared.StringValue(payload["strategyType"])))
+		environment := shared.StringValue(payload["environment"])
+		strategySet := bson.M{
+			"status":                   DeployStatusCompleted,
+			"finishedAt":               now,
+			"strategyStatus.phase":     DeployStatusCompleted,
+			"strategyStatus.updatedAt": now,
+		}
+		if strategyType == "blue-green" && service != nil {
+			activeSlot, candidateSlot := blueGreenSlots(service, environment)
+			summary = candidateSlotTitle(candidateSlot) + " is ready. Traffic stays on " + activeSlot + "."
+			strategySet["strategyStatus.type"] = "blue-green"
+			strategySet["strategyStatus.details"] = bson.M{
+				"switchPending": true,
+				"activeSlot":    activeSlot,
+				"candidateSlot": candidateSlot,
+			}
+		}
+		strategySet["strategyStatus.summary"] = summary
 		if deployID != "" {
 			_, err := shared.Collection(shared.DeploysCollection).UpdateOne(ctx, bson.M{"_id": deployID}, bson.M{
-				"$set": bson.M{
-					"status":                   DeployStatusCompleted,
-					"finishedAt":               now,
-					"strategyStatus.phase":     DeployStatusCompleted,
-					"strategyStatus.summary":   "New version active",
-					"strategyStatus.updatedAt": now,
-				},
+				"$set":   strategySet,
 				"$unset": bson.M{"activeKey": ""},
 			})
 			if err != nil {
 				return err
 			}
 		}
-		serviceID := shared.StringValue(op["resourceId"])
-		payload := shared.MapPayload(op["payload"])
-		if serviceID != "" {
-			service, err := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID})
-			if err == nil {
-				serviceType := strings.ToLower(shared.StringValue(service["type"]))
-				templateID := strings.ToLower(shared.StringValue(service["deployTemplateId"]))
-				firstSuccessfulDeploy := strings.TrimSpace(shared.StringValue(service["lastDeployAt"])) == ""
-				nextStatus := "pending"
-				if serviceType == "static-site" {
-					nextStatus = "running"
-				} else if templateID == "tpl-cronjob" {
-					nextStatus = "created"
-				}
-				_ = shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, bson.M{
-					"lastDeployAt": now,
-					"status":       nextStatus,
-					"isActive":     true,
-				})
+		if serviceID != "" && service != nil {
+			serviceType := strings.ToLower(shared.StringValue(service["type"]))
+			templateID := strings.ToLower(shared.StringValue(service["deployTemplateId"]))
+			firstSuccessfulDeploy := strings.TrimSpace(shared.StringValue(service["lastDeployAt"])) == ""
+			nextStatus := "pending"
+			if serviceType == "static-site" {
+				nextStatus = "running"
+			} else if templateID == "tpl-cronjob" {
+				nextStatus = "created"
+			}
+			_ = shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, bson.M{
+				"lastDeployAt": now,
+				"status":       nextStatus,
+				"isActive":     true,
+			})
 
-				environment := shared.StringValue(shared.MapPayload(op["payload"])["environment"])
-				if environment == "" {
-					environment = "prod"
+			environment = shared.StringValue(payload["environment"])
+			if environment == "" {
+				environment = "prod"
+			}
+			if serviceType == "microservice" {
+				publishRules := shared.BoolValue(payload["publishRules"])
+				if firstSuccessfulDeploy {
+					_ = ensureDefaultRule(ctx, serviceID, environment, now, publishRules)
 				}
-				if serviceType == "microservice" {
-					if firstSuccessfulDeploy {
-						_ = ensureDefaultRule(ctx, serviceID, environment, now)
-					}
-					servicePort := shared.IntValue(service["port"])
-					_ = SyncRulesToServicePort(ctx, serviceID, servicePort)
-					if strings.EqualFold(shared.StringValue(payload["strategyType"]), "canary") {
-						_ = RepublishRulesForServiceStrategyWithOptions(ctx, serviceID, RuleStrategyRepublishOptions{
-							Environment: environment,
-						})
-					}
+				servicePort := shared.IntValue(service["port"])
+				_ = SyncRulesToServicePort(ctx, serviceID, servicePort)
+				if publishRules {
+					_ = RepublishRulesForServiceStrategyWithOptions(ctx, serviceID, RuleStrategyRepublishOptions{
+						Environment: environment,
+					})
 				}
 			}
 		}
@@ -145,19 +165,23 @@ func applyOperationSuccess(ctx context.Context, op bson.M, now string) error {
 		}
 		return nil
 	case OperationTypeServicePromoteCanary:
+		// Traffic moves in the existing VirtualServices. Requeueing the rules
+		// flips them out of published and drops the summary URL.
 		serviceID := shared.StringValue(op["resourceId"])
 		payload := shared.MapPayload(op["payload"])
 		environment := strings.TrimSpace(shared.StringValue(payload["environment"]))
-		if environment == "" {
-			environment = "prod"
-		}
-		stableCanaryPercent := 0
 		if serviceID != "" {
 			_ = shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, bson.M{"status": "running", "isActive": true, "updatedAt": now})
-			_ = RepublishRulesForServiceStrategyWithOptions(ctx, serviceID, RuleStrategyRepublishOptions{
-				Environment:           environment,
-				CanaryPercentOverride: &stableCanaryPercent,
-			})
+			markLatestCanaryDeployPromoted(ctx, serviceID, environment, now)
+		}
+		return nil
+	case OperationTypeServiceSwitchBlueGreen:
+		serviceID := shared.StringValue(op["resourceId"])
+		payload := shared.MapPayload(op["payload"])
+		environment := strings.TrimSpace(shared.StringValue(payload["environment"]))
+		if serviceID != "" {
+			_ = shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, bson.M{"status": "running", "isActive": true, "updatedAt": now})
+			markLatestBlueGreenSwitched(ctx, serviceID, environment, now)
 		}
 		return nil
 	case OperationTypeServiceScale:
@@ -232,7 +256,7 @@ func FinalizeServiceDeletion(ctx context.Context, serviceID string) error {
 	return shared.DeleteByID(ctx, shared.Collection(shared.ServicesCollection), serviceID)
 }
 
-func ensureDefaultRule(ctx context.Context, serviceID, environment, now string) error {
+func ensureDefaultRule(ctx context.Context, serviceID, environment, now string, queue bool) error {
 	if serviceID == "" {
 		return nil
 	}
@@ -267,6 +291,10 @@ func ensureDefaultRule(ctx context.Context, serviceID, environment, now string) 
 
 	gateways := BuildGateways(nil, true, false, environment)
 
+	status := "draft"
+	if queue {
+		status = StatusQueued
+	}
 	ruleID := "rule-" + uuid.NewString()
 	ruleDoc := bson.M{
 		"_id":         ruleID,
@@ -280,13 +308,16 @@ func ensureDefaultRule(ctx context.Context, serviceID, environment, now string) 
 		"methods":     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"},
 		"protocol":    "https",
 		"port":        port,
-		"status":      StatusQueued,
+		"status":      status,
 		"createdAt":   now,
 		"updatedAt":   now,
 		"policy":      bson.M{"action": "allow", "timeoutMs": 1500, "retries": 2, "ipPolicy": "open"},
 	}
 	if err := shared.InsertOne(ctx, shared.Collection(shared.RulesCollection), ruleDoc); err != nil {
 		return err
+	}
+	if !queue {
+		return nil
 	}
 	return QueueRuleDeploy(ctx, ruleID, serviceID, environment, gateways, []string{}, "draft", "", now)
 }
@@ -373,7 +404,7 @@ func RepublishRulesForServiceStrategyWithOptions(ctx context.Context, serviceID 
 			continue
 		}
 		gateways := shared.ToStringSlice(rule["gateways"])
-		if len(gateways) == 0 && prevStatus != "published" && prevStatus != "publishing" {
+		if len(gateways) == 0 {
 			continue
 		}
 		ruleEnv := shared.StringValue(rule["environment"])
@@ -564,9 +595,63 @@ func applyOperationFailure(ctx context.Context, op bson.M, now string) error {
 		setRuleDeployStatus(ctx, shared.StringValue(op["ruleDeployId"]), "failed", now)
 		return nil
 	case OperationTypeServicePromoteCanary:
+		deployID := shared.StringValue(op["deployId"])
+		if deployID != "" {
+			summary := "Promotion failed. The current traffic split is unchanged."
+			phase := "completed"
+			if currentDeploy, err := shared.FindOne(ctx, shared.Collection(shared.DeploysCollection), bson.M{"id": deployID}); err == nil {
+				strategy := shared.MapPayload(currentDeploy["strategyStatus"])
+				step := shared.StringValue(shared.MapPayload(strategy["details"])["step"])
+				if step == "shift" || step == "cleanup" || step == "finalize" {
+					summary = "The new version is live, but the previous deployment has not finished shutting down."
+				}
+			}
+			_, _ = shared.Collection(shared.DeploysCollection).UpdateOne(ctx, bson.M{"_id": deployID}, bson.M{
+				"$set": bson.M{
+					"strategyStatus": bson.M{
+						"type":      "canary",
+						"phase":     phase,
+						"summary":   summary,
+						"details":   bson.M{"step": "failed"},
+						"updatedAt": now,
+					},
+					"updatedAt": now,
+				},
+			})
+		}
+		return nil
+	case OperationTypeServiceSwitchBlueGreen:
+		deployID := shared.StringValue(op["deployId"])
 		serviceID := shared.StringValue(op["resourceId"])
 		if serviceID != "" {
-			_ = shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, bson.M{"status": "error", "isActive": false, "updatedAt": now})
+			_ = shared.UpdateByID(ctx, shared.Collection(shared.ServicesCollection), serviceID, bson.M{"status": "running", "isActive": true, "updatedAt": now})
+		}
+		if deployID != "" {
+			summary := "Switch did not start. Traffic stays on the active slot."
+			switchPending := true
+			if currentDeploy, err := shared.FindOne(ctx, shared.Collection(shared.DeploysCollection), bson.M{"id": deployID}); err == nil {
+				strategy := shared.MapPayload(currentDeploy["strategyStatus"])
+				step := shared.StringValue(shared.MapPayload(strategy["details"])["step"])
+				if step == "shift" || step == "observe" || step == "cleanup" || step == "finalize" {
+					summary = "The new slot is live, but the previous slot has not finished shutting down."
+					switchPending = false
+				}
+			}
+			_, _ = shared.Collection(shared.DeploysCollection).UpdateOne(ctx, bson.M{"_id": deployID}, bson.M{
+				"$set": bson.M{
+					"strategyStatus": bson.M{
+						"type":    "blue-green",
+						"phase":   "completed",
+						"summary": summary,
+						"details": bson.M{
+							"step":          "failed",
+							"switchPending": switchPending,
+						},
+						"updatedAt": now,
+					},
+					"updatedAt": now,
+				},
+			})
 		}
 		return nil
 	case OperationTypeServiceScale:
@@ -607,6 +692,74 @@ func BuildGateways(existing []string, internal bool, external bool, environment 
 		}
 	}
 	return shared.UniqueStrings(next)
+}
+
+func markLatestCanaryDeployPromoted(ctx context.Context, serviceID, environment, now string) {
+	markLatestDeployStrategy(ctx, serviceID, environment, now, "promoted", "Promoted to stable", nil)
+}
+
+func markLatestBlueGreenSwitched(ctx context.Context, serviceID, environment, now string) {
+	summary := "Traffic is on the selected slot."
+	details := bson.M{"switchPending": false}
+	if service, err := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID}); err == nil {
+		activeSlot, _ := blueGreenSlots(service, environment)
+		summary = "Traffic is on " + activeSlot + "."
+		details["activeSlot"] = activeSlot
+	}
+	markLatestDeployStrategy(ctx, serviceID, environment, now, "promoted", summary, details)
+}
+
+func markLatestDeployStrategy(ctx context.Context, serviceID, environment, now, phase, summary string, details bson.M) {
+	if strings.TrimSpace(environment) == "" {
+		environment = "prod"
+	}
+	cursor, err := shared.Collection(shared.DeploysCollection).Find(
+		ctx,
+		bson.M{"serviceId": serviceID, "environment": environment},
+		options.Find().SetSort(bson.D{{Key: "startedAt", Value: -1}}).SetLimit(1),
+	)
+	if err != nil {
+		return
+	}
+	defer cursor.Close(ctx)
+	if !cursor.Next(ctx) {
+		return
+	}
+	var deploy bson.M
+	if err := cursor.Decode(&deploy); err != nil {
+		return
+	}
+	deployID := shared.StringValue(deploy["id"])
+	if deployID == "" {
+		return
+	}
+	_ = shared.UpdateByID(ctx, shared.Collection(shared.DeploysCollection), deployID, bson.M{
+		"strategyStatus.phase":     phase,
+		"strategyStatus.summary":   summary,
+		"strategyStatus.details":   details,
+		"strategyStatus.updatedAt": now,
+	})
+}
+
+func blueGreenSlots(service bson.M, environment string) (string, string) {
+	strategy := shared.MapPayload(service["deploymentStrategy"])
+	slots := shared.MapPayload(strategy["environmentSlots"])
+	envKey := shared.NormalizeOperationEnvironment(environment)
+	primary := strings.ToLower(strings.TrimSpace(shared.StringValue(slots[envKey])))
+	if primary != "blue" && primary != "green" {
+		primary = strings.ToLower(strings.TrimSpace(shared.StringValue(strategy["blueGreenPrimary"])))
+	}
+	if primary != "green" {
+		return "blue", "green"
+	}
+	return "green", "blue"
+}
+
+func candidateSlotTitle(slot string) string {
+	if strings.EqualFold(slot, "green") {
+		return "Green"
+	}
+	return "Blue"
 }
 
 func setRuleDeployStatus(ctx context.Context, ruleDeployID, status, finishedAt string) {

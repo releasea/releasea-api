@@ -18,6 +18,7 @@ type OperationContractSpec struct {
 var operationTypeCatalogOrder = []string{
 	OperationTypeServiceDeploy,
 	OperationTypeServicePromoteCanary,
+	OperationTypeServiceSwitchBlueGreen,
 	OperationTypeServiceDelete,
 	OperationTypeRuleDeploy,
 	OperationTypeRulePublish,
@@ -53,6 +54,17 @@ var operationContractCatalog = map[string]OperationContractSpec{
 		StatusLifecycle:   operationStatusLifecycle,
 		RetryPolicy:       "no automatic retries",
 		RollbackPolicy:    "terminal failure, no automated rollback orchestration",
+		CompatibilityRule: "additive payload changes only",
+	},
+	OperationTypeServiceSwitchBlueGreen: {
+		Type:              OperationTypeServiceSwitchBlueGreen,
+		Version:           OperationContractCatalogVersion,
+		ResourceType:      "service",
+		PayloadRequired:   []string{"environment"},
+		PayloadOptional:   []string{"workerTags", "deployId"},
+		StatusLifecycle:   operationStatusLifecycle,
+		RetryPolicy:       "no automatic retries",
+		RollbackPolicy:    "switch rolls traffic back when the new slot is unhealthy before cleanup",
 		CompatibilityRule: "additive payload changes only",
 	},
 	OperationTypeServiceDelete: {

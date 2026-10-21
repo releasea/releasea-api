@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 
-	operations "releaseaapi/internal/features/operations/api"
 	servicesmodels "releaseaapi/internal/features/services/models"
 	"releaseaapi/internal/platform/shared"
 
@@ -120,7 +119,19 @@ func UpdateBlueGreenPrimary(c *gin.Context) {
 		return
 	}
 	strategy["type"] = "blue-green"
-	strategy["blueGreenPrimary"] = activeSlot
+	slots := shared.MapPayload(strategy["environmentSlots"])
+	if slots == nil {
+		slots = bson.M{}
+	}
+	envKey := normalizeRuntimeEnvironment(payload.Environment)
+	if envKey == "" {
+		envKey = "prod"
+	}
+	slots[envKey] = activeSlot
+	strategy["environmentSlots"] = slots
+	if strings.TrimSpace(shared.StringValue(strategy["blueGreenPrimary"])) == "" {
+		strategy["blueGreenPrimary"] = activeSlot
+	}
 
 	now := shared.NowISO()
 	update := bson.M{
@@ -131,7 +142,6 @@ func UpdateBlueGreenPrimary(c *gin.Context) {
 		shared.RespondError(c, http.StatusInternalServerError, "Failed to update blue-green strategy")
 		return
 	}
-	_ = operations.RepublishRulesForServiceStrategy(ctx, serviceID)
 
 	c.JSON(http.StatusOK, gin.H{
 		"status":     "ok",

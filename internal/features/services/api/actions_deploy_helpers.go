@@ -23,10 +23,12 @@ import (
 )
 
 type createDeployRequest struct {
-	ServiceID   string
-	Environment string
-	Version     string
-	Trigger     string
+	ServiceID    string
+	Environment  string
+	Version      string
+	Trigger      string
+	PromoteFrom  string
+	PublishRules bool
 }
 
 type promoteCanaryRequest struct {
@@ -35,9 +37,12 @@ type promoteCanaryRequest struct {
 }
 
 type deployResolution struct {
-	Branch  string
-	Version string
-	Image   string
+	Branch            string
+	Version           string
+	Image             string
+	ReuseImage        bool
+	SourceEnvironment string
+	SourceDeployID    string
 }
 
 type deployPolicyEvaluationResult struct {
@@ -167,9 +172,11 @@ func parseCreateDeployRequest(c *gin.Context) (createDeployRequest, bool) {
 	}
 
 	var payload struct {
-		Environment string `json:"environment"`
-		Version     string `json:"version"`
-		Trigger     string `json:"trigger"`
+		Environment  string `json:"environment"`
+		Version      string `json:"version"`
+		Trigger      string `json:"trigger"`
+		PromoteFrom  string `json:"promoteFrom"`
+		PublishRules bool   `json:"publishRules"`
 	}
 	if err := c.ShouldBindJSON(&payload); err != nil {
 		shared.RespondError(c, http.StatusBadRequest, "Invalid payload")
@@ -181,12 +188,116 @@ func parseCreateDeployRequest(c *gin.Context) (createDeployRequest, bool) {
 		trigger = "manual"
 	}
 
+	promoteFrom := strings.TrimSpace(payload.PromoteFrom)
+	if promoteFrom != "" {
+		promoteFrom = shared.NormalizeOperationEnvironment(promoteFrom)
+	}
 	return createDeployRequest{
-		ServiceID:   serviceID,
-		Environment: shared.NormalizeOperationEnvironment(payload.Environment),
-		Version:     strings.TrimSpace(payload.Version),
-		Trigger:     trigger,
+		ServiceID:    serviceID,
+		Environment:  shared.NormalizeOperationEnvironment(payload.Environment),
+		Version:      strings.TrimSpace(payload.Version),
+		Trigger:      trigger,
+		PromoteFrom:  promoteFrom,
+		PublishRules: payload.PublishRules,
 	}, true
+}
+
+func selectPromotedRelease(sourceEnvironment, targetEnvironment string, deploy bson.M, builds []bson.M) (deployResolution, error) {
+	source := strings.TrimSpace(sourceEnvironment)
+	target := strings.TrimSpace(targetEnvironment)
+	if source == "" {
+		return deployResolution{}, errors.New("source environment is required")
+	}
+	if source == target {
+		return deployResolution{}, errors.New("choose a different source environment")
+	}
+	if deploy == nil {
+		return deployResolution{}, fmt.Errorf("no successful release in %s to promote", source)
+	}
+	version := strings.TrimSpace(shared.StringValue(deploy["commit"]))
+	image := strings.TrimSpace(shared.StringValue(deploy["image"]))
+	if image == "" {
+		for _, build := range builds {
+			candidate := strings.TrimSpace(shared.StringValue(build["image"]))
+			if candidate == "" {
+				continue
+			}
+			buildCommit := strings.TrimSpace(shared.StringValue(build["commit"]))
+			if version == "" || buildCommit == version {
+				image = candidate
+				if version == "" {
+					version = buildCommit
+				}
+				break
+			}
+		}
+	}
+	if image == "" {
+		return deployResolution{}, fmt.Errorf("the release in %s has no reusable image yet", source)
+	}
+	if version == "" {
+		version = image
+	}
+	return deployResolution{
+		Version:           version,
+		Image:             image,
+		ReuseImage:        true,
+		SourceEnvironment: source,
+		SourceDeployID:    shared.StringValue(deploy["id"]),
+	}, nil
+}
+
+func selectFirstPromotedRelease(sourceEnvironment, targetEnvironment string, deploys []bson.M, buildsFor func(bson.M) ([]bson.M, error)) (deployResolution, error) {
+	if len(deploys) == 0 {
+		return selectPromotedRelease(sourceEnvironment, targetEnvironment, nil, nil)
+	}
+	var lastErr error
+	for _, deploy := range deploys {
+		var builds []bson.M
+		if buildsFor != nil && strings.TrimSpace(shared.StringValue(deploy["image"])) == "" {
+			loaded, err := buildsFor(deploy)
+			if err != nil {
+				return deployResolution{}, err
+			}
+			builds = loaded
+		}
+		resolution, err := selectPromotedRelease(sourceEnvironment, targetEnvironment, deploy, builds)
+		if err == nil {
+			return resolution, nil
+		}
+		lastErr = err
+		message := err.Error()
+		if strings.Contains(message, "different source") || strings.Contains(message, "source environment is required") {
+			return deployResolution{}, err
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no successful release in %s to promote", sourceEnvironment)
+	}
+	return deployResolution{}, lastErr
+}
+
+func resolvePromotedRelease(ctx context.Context, serviceID, sourceEnvironment, targetEnvironment string) (deployResolution, error) {
+	deploys, err := shared.FindAllSorted(ctx, shared.Collection(shared.DeploysCollection), bson.M{
+		"serviceId":   serviceID,
+		"environment": sourceEnvironment,
+		"status": bson.M{
+			"$in": operations.DeploySuccessfulStatuses(),
+		},
+	}, bson.D{{Key: "startedAt", Value: -1}})
+	if err != nil {
+		return deployResolution{}, err
+	}
+	return selectFirstPromotedRelease(sourceEnvironment, targetEnvironment, deploys, func(deploy bson.M) ([]bson.M, error) {
+		commit := strings.TrimSpace(shared.StringValue(deploy["commit"]))
+		filter := bson.M{"serviceId": serviceID}
+		if commit != "" {
+			filter["commit"] = commit
+		} else {
+			filter["environment"] = sourceEnvironment
+		}
+		return shared.FindAllSorted(ctx, shared.Collection(shared.BuildsCollection), filter, bson.D{{Key: "createdAt", Value: -1}})
+	})
 }
 
 func loadDeployServiceOrRespond(c *gin.Context, ctx context.Context, serviceID string) (bson.M, bool) {
@@ -852,6 +963,13 @@ func buildDeployApprovalMetadata(
 		metadata["image"] = resolution.Image
 		action["image"] = resolution.Image
 	}
+	if resolution.ReuseImage {
+		metadata["reuseImage"] = true
+		metadata["promotedFrom"] = resolution.SourceEnvironment
+		action["reuseImage"] = true
+		action["promotedFrom"] = resolution.SourceEnvironment
+		action["sourceDeployId"] = resolution.SourceDeployID
+	}
 	return metadata
 }
 
@@ -894,6 +1012,11 @@ func persistDeployRecord(
 	if resolution.Image != "" {
 		deployDoc["image"] = resolution.Image
 	}
+	if resolution.ReuseImage {
+		deployDoc["reuseImage"] = true
+		deployDoc["promotedFrom"] = resolution.SourceEnvironment
+		deployDoc["sourceDeployId"] = resolution.SourceDeployID
+	}
 
 	if err := shared.InsertOne(ctx, shared.Collection(shared.DeploysCollection), deployDoc); err != nil {
 		return nil, err
@@ -930,6 +1053,7 @@ func persistDeployOperationRecord(
 			"commitSha":    resolution.Version,
 			"strategyType": strategyType,
 			"trigger":      request.Trigger,
+			"publishRules": request.PublishRules,
 		},
 		"deployId":    deployID,
 		"requestedBy": triggeredBy,
@@ -939,6 +1063,11 @@ func persistDeployOperationRecord(
 	opPayload := shared.MapPayload(opDoc["payload"])
 	if resolution.Image != "" {
 		opPayload["image"] = resolution.Image
+	}
+	if resolution.ReuseImage {
+		opPayload["reuseImage"] = true
+		opPayload["promotedFrom"] = resolution.SourceEnvironment
+		opPayload["sourceDeployId"] = resolution.SourceDeployID
 	}
 	applyWorkerRoutingToPayload(opPayload, workerRouting)
 	opPayload["resources"] = resources
@@ -1013,6 +1142,31 @@ func persistPromoteCanaryOperation(
 	now string,
 ) (bson.M, string, error) {
 	operationID := "op-" + uuid.NewString()
+	deploys, err := shared.FindAllSorted(ctx, shared.Collection(shared.DeploysCollection), bson.M{
+		"serviceId":   serviceID,
+		"environment": environment,
+	}, bson.D{{Key: "startedAt", Value: -1}})
+	if err != nil {
+		return nil, "", err
+	}
+	deployID := ""
+	if len(deploys) > 0 {
+		deployID = shared.StringValue(deploys[0]["id"])
+	}
+	if deployID != "" {
+		_, _ = shared.Collection(shared.DeploysCollection).UpdateOne(ctx, bson.M{"_id": deployID}, bson.M{
+			"$set": bson.M{
+				"strategyStatus": bson.M{
+					"type":      "canary",
+					"phase":     "promoting",
+					"summary":   "Promotion queued",
+					"details":   bson.M{"step": "queued"},
+					"updatedAt": now,
+				},
+				"updatedAt": now,
+			},
+		})
+	}
 	opDoc := bson.M{
 		"_id":          operationID,
 		"id":           operationID,
@@ -1024,7 +1178,9 @@ func persistPromoteCanaryOperation(
 		"updatedAt":    now,
 		"payload": bson.M{
 			"environment": environment,
+			"deployId":    deployID,
 		},
+		"deployId":    deployID,
 		"requestedBy": requestedBy,
 		"serviceName": serviceName,
 	}
@@ -1034,4 +1190,128 @@ func persistPromoteCanaryOperation(
 		return nil, "", err
 	}
 	return opDoc, operationID, nil
+}
+
+func respondIfSwitchBlueGreenBlocked(c *gin.Context, ctx context.Context, serviceID, environment string) (bool, error) {
+	activeFilter := bson.M{
+		"type":       operations.OperationTypeServiceSwitchBlueGreen,
+		"resourceId": serviceID,
+		"status": bson.M{
+			"$in": []string{operations.StatusQueued, operations.StatusInProgress},
+		},
+		"payload.environment": environment,
+	}
+
+	activeOp, err := shared.FindOne(ctx, shared.Collection(shared.OperationsCollection), activeFilter)
+	if err == nil {
+		c.JSON(http.StatusAccepted, gin.H{"operation": activeOp, "message": "Switch already in progress"})
+		return true, nil
+	}
+	if err != nil && !errors.Is(err, mongo.ErrNoDocuments) {
+		return false, err
+	}
+	return false, nil
+}
+
+func persistSwitchBlueGreenOperation(
+	ctx context.Context,
+	serviceID string,
+	environment string,
+	workerRouting workerRoutingResolution,
+	serviceName string,
+	requestedBy string,
+	now string,
+) (bson.M, string, error) {
+	operationID := "op-" + uuid.NewString()
+	deploys, err := shared.FindAllSorted(ctx, shared.Collection(shared.DeploysCollection), bson.M{
+		"serviceId":   serviceID,
+		"environment": environment,
+	}, bson.D{{Key: "startedAt", Value: -1}})
+	if err != nil {
+		return nil, "", err
+	}
+	deployID := ""
+	activeSlot := "blue"
+	candidateSlot := "green"
+	slotsFromDeploy := false
+	if len(deploys) > 0 {
+		deployID = shared.StringValue(deploys[0]["id"])
+		details := shared.MapPayload(shared.MapPayload(deploys[0]["strategyStatus"])["details"])
+		if shared.BoolValue(details["switchPending"]) {
+			recordedActive := strings.ToLower(strings.TrimSpace(shared.StringValue(details["activeSlot"])))
+			recordedCandidate := strings.ToLower(strings.TrimSpace(shared.StringValue(details["candidateSlot"])))
+			if (recordedActive == "blue" || recordedActive == "green") && (recordedCandidate == "blue" || recordedCandidate == "green") && recordedActive != recordedCandidate {
+				activeSlot = recordedActive
+				candidateSlot = recordedCandidate
+				slotsFromDeploy = true
+			}
+		}
+	}
+	if !slotsFromDeploy {
+		if service, findErr := shared.FindOne(ctx, shared.Collection(shared.ServicesCollection), bson.M{"id": serviceID}); findErr == nil {
+			primary := environmentBlueGreenSlot(service, environment)
+			if primary == "green" {
+				activeSlot = "green"
+				candidateSlot = "blue"
+			}
+		}
+	}
+	if deployID != "" {
+		_, _ = shared.Collection(shared.DeploysCollection).UpdateOne(ctx, bson.M{"_id": deployID}, bson.M{
+			"$set": bson.M{
+				"strategyStatus": bson.M{
+					"type":    "blue-green",
+					"phase":   "promoting",
+					"summary": "Switch queued",
+					"details": bson.M{
+						"step":          "queued",
+						"activeSlot":    activeSlot,
+						"candidateSlot": candidateSlot,
+					},
+					"updatedAt": now,
+				},
+				"updatedAt": now,
+			},
+		})
+	}
+	opDoc := bson.M{
+		"_id":          operationID,
+		"id":           operationID,
+		"type":         operations.OperationTypeServiceSwitchBlueGreen,
+		"resourceType": "service",
+		"resourceId":   serviceID,
+		"status":       operations.StatusQueued,
+		"createdAt":    now,
+		"updatedAt":    now,
+		"payload": bson.M{
+			"environment":   environment,
+			"deployId":      deployID,
+			"activeSlot":    activeSlot,
+			"candidateSlot": candidateSlot,
+		},
+		"deployId":    deployID,
+		"requestedBy": requestedBy,
+		"serviceName": serviceName,
+	}
+	applyWorkerRoutingToPayload(shared.MapPayload(opDoc["payload"]), workerRouting)
+
+	if err := shared.InsertOne(ctx, shared.Collection(shared.OperationsCollection), opDoc); err != nil {
+		return nil, "", err
+	}
+	return opDoc, operationID, nil
+}
+
+func environmentBlueGreenSlot(service bson.M, environment string) string {
+	strategy := shared.MapPayload(service["deploymentStrategy"])
+	slots := shared.MapPayload(strategy["environmentSlots"])
+	envKey := shared.NormalizeOperationEnvironment(environment)
+	slot := strings.ToLower(strings.TrimSpace(shared.StringValue(slots[envKey])))
+	if slot == "blue" || slot == "green" {
+		return slot
+	}
+	primary := strings.ToLower(strings.TrimSpace(shared.StringValue(strategy["blueGreenPrimary"])))
+	if primary == "green" {
+		return "green"
+	}
+	return "blue"
 }

@@ -206,6 +206,7 @@ func registerServiceRoutes(rg *gin.RouterGroup) {
 	rg.GET("/services/:id/pods", services.GetServicePods)
 	rg.POST("/services/:id/deploys", platformauth.RequireRoles("admin", "developer"), platformsecurity.RequireIdempotencyKey(), services.CreateDeploy)
 	rg.POST("/services/:id/promote-canary", platformauth.RequireRoles("admin", "developer"), platformsecurity.RequireIdempotencyKey(), services.PromoteCanary)
+	rg.POST("/services/:id/switch-blue-green", platformauth.RequireRoles("admin", "developer"), platformsecurity.RequireIdempotencyKey(), services.SwitchBlueGreen)
 	rg.GET("/services/:id/builds", services.GetServiceBuilds)
 	rg.GET("/services/:id/governance-events", services.GetServiceGovernanceEvents)
 	rg.GET("/services/:id/deploy-policy-check", services.GetServiceDeployPolicyCheck)
@@ -233,6 +234,7 @@ func registerRuleRoutes(rg *gin.RouterGroup) {
 	rg.PUT("/rules/:id", platformauth.RequireRoles("admin", "developer"), rules.UpdateRule)
 	rg.DELETE("/rules/:id", platformauth.RequireRoles("admin", "developer"), rules.DeleteRule)
 	rg.POST("/rules/:id/publish", platformauth.RequireRoles("admin", "developer"), rules.PublishRule)
+	rg.POST("/rules/:id/promote", platformauth.RequireRoles("admin", "developer"), rules.PromoteRule)
 	rg.POST("/rules/:id/logs", rules.AppendRuleLogs)
 }
 

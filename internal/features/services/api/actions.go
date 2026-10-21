@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 
-	operations "releaseaapi/internal/features/operations/api"
 	scmproviders "releaseaapi/internal/platform/providers/scm"
 	operationqueue "releaseaapi/internal/platform/queue"
 	"releaseaapi/internal/platform/shared"
@@ -44,6 +43,32 @@ func CreateDeploy(c *gin.Context) {
 		})
 		shared.RespondError(c, http.StatusBadRequest, "Unable to resolve deploy image for this Docker source.")
 		return
+	}
+	if request.PromoteFrom != "" {
+		promoted, promoteErr := resolvePromotedRelease(ctx, request.ServiceID, request.PromoteFrom, request.Environment)
+		if promoteErr != nil {
+			message := promoteErr.Error()
+			if strings.Contains(message, "no successful release") || strings.Contains(message, "no reusable image") || strings.Contains(message, "different source") || strings.Contains(message, "source environment is required") {
+				shared.RespondError(c, http.StatusConflict, message)
+				return
+			}
+			shared.LogError("service.deploy.promote_release_failed", promoteErr, shared.LogFields{
+				"serviceId":   request.ServiceID,
+				"environment": request.Environment,
+				"promoteFrom": request.PromoteFrom,
+			})
+			shared.RespondError(c, http.StatusInternalServerError, "Failed to resolve the release to promote")
+			return
+		}
+		resolution.Version = promoted.Version
+		resolution.Image = promoted.Image
+		resolution.ReuseImage = true
+		resolution.SourceEnvironment = promoted.SourceEnvironment
+		resolution.SourceDeployID = promoted.SourceDeployID
+		request.Version = promoted.Version
+		if request.Trigger == "" || request.Trigger == "manual" {
+			request.Trigger = "promotion"
+		}
 	}
 
 	blocked, queueCheckErr := respondIfActiveDeployBlocked(c, ctx, request.ServiceID, request.Environment)
@@ -209,16 +234,6 @@ func PromoteCanary(c *gin.Context) {
 	}
 
 	now := shared.NowISO()
-	stableCanaryPercent := 0
-	if err := operations.RepublishRulesForServiceStrategyWithOptions(ctx, request.ServiceID, operations.RuleStrategyRepublishOptions{
-		Environment:           request.Environment,
-		CanaryPercentOverride: &stableCanaryPercent,
-	}); err != nil {
-		shared.LogError("service.promote_canary.rules_republish_failed", err, shared.LogFields{
-			"serviceId": request.ServiceID,
-		})
-	}
-
 	requestedBy := resolveRequestedByOrSystem(c)
 	opDoc, operationID, err := persistPromoteCanaryOperation(ctx, request.ServiceID, request.Environment, workerRouting, shared.StringValue(service["name"]), requestedBy, now)
 	if err != nil {
@@ -226,6 +241,83 @@ func PromoteCanary(c *gin.Context) {
 		return
 	}
 	recordPlatformDeployAudit(ctx, c, "deploy.promote_canary.queued", operationID, "accepted", map[string]interface{}{
+		"name":         shared.StringValue(service["name"]),
+		"serviceId":    request.ServiceID,
+		"environment":  request.Environment,
+		"operationId":  operationID,
+		"strategyType": strategyType,
+		"sourceType":   sourceType,
+	})
+	if !publishOperationOrRespondQueued(c, ctx, operationID, opDoc, nil) {
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"operation": opDoc})
+}
+
+func SwitchBlueGreen(c *gin.Context) {
+	request, ok := parsePromoteCanaryRequest(c)
+	if !ok {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), shared.DBTimeout)
+	defer cancel()
+
+	service, ok := loadDeployServiceOrRespond(c, ctx, request.ServiceID)
+	if !ok {
+		return
+	}
+	if isObservedService(service) {
+		c.JSON(http.StatusConflict, gin.H{
+			"message": "Observed services cannot be deployed by Releasea. Switch the service to managed mode first.",
+			"code":    "SERVICE_OBSERVED_MODE",
+		})
+		return
+	}
+	strategyType := resolveServiceDeployStrategyType(service)
+	if strategyType != "blue-green" {
+		shared.RespondError(c, http.StatusBadRequest, "Service is not using blue-green strategy")
+		return
+	}
+	sourceType := normalizeServiceSourceType(shared.StringValue(service["sourceType"]))
+	if sourceType == "" {
+		if strings.TrimSpace(shared.StringValue(service["repoUrl"])) != "" {
+			sourceType = "git"
+		} else if strings.TrimSpace(shared.StringValue(service["dockerImage"])) != "" {
+			sourceType = "registry"
+		}
+	}
+	replicaTarget := resolveServiceDeployReplicaTarget(service)
+	registryHost := resolveDeployPolicyRegistryHost(service, deployResolution{})
+	if maybeRespondDeployPolicyBlocked(c, ctx, request.ServiceID, shared.StringValue(service["name"]), service, request.Environment, "manual", sourceType, registryHost, strategyType, replicaTarget, true) {
+		return
+	}
+
+	blocked, queueCheckErr := respondIfSwitchBlueGreenBlocked(c, ctx, request.ServiceID, request.Environment)
+	if blocked {
+		return
+	}
+	if queueCheckErr != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to check switch queue")
+		return
+	}
+	workerRouting, err := resolveServiceWorkerRouting(ctx, request.Environment, service)
+	if err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to resolve worker routing")
+		return
+	}
+	if !ensureWorkerAvailabilityOrRespondWithCluster(c, ctx, request.Environment, workerRouting.WorkerTags, workerRouting.PreferredWorkerCluster) {
+		return
+	}
+
+	now := shared.NowISO()
+	requestedBy := resolveRequestedByOrSystem(c)
+	opDoc, operationID, err := persistSwitchBlueGreenOperation(ctx, request.ServiceID, request.Environment, workerRouting, shared.StringValue(service["name"]), requestedBy, now)
+	if err != nil {
+		shared.RespondError(c, http.StatusInternalServerError, "Failed to queue switch")
+		return
+	}
+	recordPlatformDeployAudit(ctx, c, "deploy.switch_blue_green.queued", operationID, "accepted", map[string]interface{}{
 		"name":         shared.StringValue(service["name"]),
 		"serviceId":    request.ServiceID,
 		"environment":  request.Environment,

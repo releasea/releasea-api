@@ -30,7 +30,7 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Extract metadata
         id: meta
@@ -65,6 +65,7 @@ jobs:
       - name: Delete old package versions (keep last 2)
         uses: actions/delete-package-versions@v4
         with:
+          token: ${{ secrets.GHCR_TOKEN }}
           package-name: releasea-api
           package-type: container
           min-versions-to-keep: 2

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 
 	operations "releaseaapi/internal/features/operations/api"
@@ -175,25 +176,10 @@ func createRuleFromPayload(c *gin.Context, payload map[string]interface{}, servi
 	}
 	hosts := shared.ToStringSlice(payload["hosts"])
 
-	policyMap := shared.MapPayload(payload["policy"])
-	action := shared.StringValue(policyMap["action"])
-	if action == "" {
-		action = "allow"
-	}
-	policy := bson.M{
-		"action":    action,
-		"timeoutMs": shared.IntValue(policyMap["timeoutMs"]),
-		"retries":   shared.IntValue(policyMap["retries"]),
-		"ipPolicy":  shared.StringValue(policyMap["ipPolicy"]),
-	}
-	if shared.IntValue(policy["timeoutMs"]) <= 0 {
-		policy["timeoutMs"] = 1500
-	}
-	if shared.IntValue(policy["retries"]) <= 0 {
-		policy["retries"] = 2
-	}
-	if shared.StringValue(policy["ipPolicy"]) == "" {
-		policy["ipPolicy"] = "open"
+	policy, err := normalizeRulePolicy(shared.MapPayload(payload["policy"]))
+	if err != nil {
+		shared.RespondError(c, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	internal := shared.BoolValue(payload["internal"])
@@ -408,7 +394,12 @@ func UpdateRule(c *gin.Context) {
 		update["port"] = shared.IntValue(v)
 	}
 	if v, ok := payload["policy"]; ok {
-		update["policy"] = shared.MapPayload(v)
+		policy, policyErr := normalizeRulePolicy(shared.MapPayload(v))
+		if policyErr != nil {
+			shared.RespondError(c, http.StatusBadRequest, policyErr.Error())
+			return
+		}
+		update["policy"] = policy
 	}
 
 	if err := shared.UpdateByID(ctx, shared.Collection(shared.RulesCollection), ruleID, update); err != nil {
@@ -436,6 +427,72 @@ func UpdateRule(c *gin.Context) {
 		},
 	})
 	c.JSON(http.StatusOK, updated)
+}
+
+func normalizeRulePolicy(input map[string]interface{}) (bson.M, error) {
+	action := strings.ToLower(strings.TrimSpace(shared.StringValue(input["action"])))
+	if action == "" {
+		action = "allow"
+	}
+	if action != "allow" && action != "deny" {
+		return nil, errors.New("policy action must be allow or deny")
+	}
+
+	authMode := strings.ToLower(strings.TrimSpace(shared.StringValue(input["authMode"])))
+	if authMode == "" {
+		authMode = "public"
+	}
+	if authMode != "public" && authMode != "jwt" {
+		return nil, errors.New("access mode must be public or jwt")
+	}
+	if action == "deny" {
+		authMode = "public"
+	}
+
+	issuer := strings.TrimSpace(shared.StringValue(input["jwtIssuer"]))
+	jwksURI := strings.TrimSpace(shared.StringValue(input["jwksUri"]))
+	if authMode == "jwt" {
+		if issuer == "" {
+			return nil, errors.New("JWT issuer is required when authenticated access is enabled")
+		}
+		if jwksURI == "" {
+			return nil, errors.New("JWKS URL is required when authenticated access is enabled")
+		}
+		parsedIssuer, issuerErr := url.ParseRequestURI(issuer)
+		parsedJWKS, jwksErr := url.ParseRequestURI(jwksURI)
+		if issuerErr != nil || parsedIssuer.Scheme == "" || parsedIssuer.Host == "" {
+			return nil, errors.New("JWT issuer must be a valid absolute URL")
+		}
+		if jwksErr != nil || parsedJWKS.Scheme == "" || parsedJWKS.Host == "" {
+			return nil, errors.New("JWKS URL must be a valid absolute URL")
+		}
+	}
+
+	timeoutMs := shared.IntValue(input["timeoutMs"])
+	if timeoutMs <= 0 {
+		timeoutMs = 1500
+	}
+	retries := shared.IntValue(input["retries"])
+	if retries <= 0 {
+		retries = 2
+	}
+	ipPolicy := strings.TrimSpace(shared.StringValue(input["ipPolicy"]))
+	if ipPolicy == "" {
+		ipPolicy = "open"
+	}
+
+	return bson.M{
+		"action":          action,
+		"timeoutMs":       timeoutMs,
+		"retries":         retries,
+		"ipPolicy":        ipPolicy,
+		"ipList":          shared.ToStringSlice(input["ipList"]),
+		"requiredHeaders": shared.ToStringSlice(input["requiredHeaders"]),
+		"authMode":        authMode,
+		"jwtIssuer":       issuer,
+		"jwksUri":         jwksURI,
+		"audiences":       shared.ToStringSlice(input["audiences"]),
+	}, nil
 }
 
 func DeleteRule(c *gin.Context) {

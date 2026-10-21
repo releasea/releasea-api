@@ -8,14 +8,15 @@ const (
 	StatusSucceeded  = "succeeded"
 	StatusFailed     = "failed"
 
-	OperationTypeServiceDeploy        = "service.deploy"
-	OperationTypeServiceScale         = "service.scale"
-	OperationTypeServicePromoteCanary = "service.promote-canary"
-	OperationTypeServiceDelete        = "service.delete"
-	OperationTypeRuleDeploy           = "rule.deploy"
-	OperationTypeRulePublish          = "rule.publish"
-	OperationTypeRuleDelete           = "rule.delete"
-	OperationTypeWorkerRestart        = "worker.restart"
+	OperationTypeServiceDeploy          = "service.deploy"
+	OperationTypeServiceScale           = "service.scale"
+	OperationTypeServicePromoteCanary   = "service.promote-canary"
+	OperationTypeServiceSwitchBlueGreen = "service.switch-blue-green"
+	OperationTypeServiceDelete          = "service.delete"
+	OperationTypeRuleDeploy             = "rule.deploy"
+	OperationTypeRulePublish            = "rule.publish"
+	OperationTypeRuleDelete             = "rule.delete"
+	OperationTypeWorkerRestart          = "worker.restart"
 )
 
 func IsKnownOperationStatus(status string) bool {

@@ -65,10 +65,30 @@ func (githubRuntime) CheckTemplateRepoAvailability(ctx context.Context, token, o
 	if status == http.StatusNotFound {
 		return false, nil
 	}
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		publicExists, publicErr := publicRepoExists(ctx, client, repoURL)
+		if publicErr == nil {
+			return publicExists, nil
+		}
+	}
 	if err := gh.ResponseError(status, body, "Failed to check repository availability"); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+func publicRepoExists(ctx context.Context, client *http.Client, repoURL string) (bool, error) {
+	_, status, err := gh.RequestWithClient(ctx, client, "", http.MethodGet, repoURL, nil)
+	if err != nil {
+		return false, err
+	}
+	if status == http.StatusNotFound {
+		return false, nil
+	}
+	if status >= 200 && status < 300 {
+		return true, nil
+	}
+	return false, fmt.Errorf("public repository lookup returned HTTP %d", status)
 }
 
 func (githubRuntime) CreateTemplateRepo(ctx context.Context, token string, payload scmmodels.TemplateRepoRequest) (*scmmodels.TemplateRepoResponse, error) {

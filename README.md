@@ -4,7 +4,7 @@ REST API server for the Releasea platform (Go + Gin + MongoDB).
 
 ## Overview
 
-The API is the control plane for services, deploy operations, workers, governance, identity, and real-time status streaming.
+The API serves the Releasea service surface: services, environments, workers, the edge, governance, identity, and live status.
 
 It also provides the read-only operational AI gateway used to connect OpenAI or OpenAI-compatible runtimes. Provider credentials use the same encrypted credential envelope as other platform integrations; models receive sanitized evidence and cannot execute platform operations.
 

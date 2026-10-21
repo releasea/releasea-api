@@ -57,7 +57,9 @@ func ApplyGitHubRequest(req *http.Request, token string, hasBody bool) {
 	if req == nil {
 		return
 	}
-	SetBearerToken(req, token)
+	if strings.TrimSpace(token) != "" {
+		SetBearerToken(req, token)
+	}
 	req.Header.Set(HeaderAccept, AcceptGitHubJSON)
 	req.Header.Set(HeaderUserAgent, DefaultUserAgent)
 	if hasBody {

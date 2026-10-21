@@ -750,10 +750,30 @@ func sanitizeStrategy(value bson.M) (bson.M, bool) {
 		}
 		clean["type"] = "blue-green"
 		clean["blueGreenPrimary"] = primary
+		if slots := sanitizeEnvironmentSlots(value["environmentSlots"]); len(slots) > 0 {
+			clean["environmentSlots"] = slots
+		}
 	default:
 		return nil, false
 	}
 	return clean, true
+}
+
+func sanitizeEnvironmentSlots(raw interface{}) bson.M {
+	slots := shared.MapPayload(raw)
+	if len(slots) == 0 {
+		return nil
+	}
+	clean := bson.M{}
+	for key, value := range slots {
+		envKey := shared.NormalizeOperationEnvironment(key)
+		slot := strings.ToLower(strings.TrimSpace(shared.StringValue(value)))
+		if envKey == "" || (slot != "blue" && slot != "green") {
+			continue
+		}
+		clean[envKey] = slot
+	}
+	return clean
 }
 
 type normalizedServiceStrategy struct {
